@@ -1,0 +1,642 @@
+---
+title: 'Pristina Transcriptomic Landscape: Transcription Factor Analysis'
+author: "Alberto Perez-Posada @apposada"
+date: "16/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# About
+
+This markdowns describes the steps followed to generate a Transcription Factor annotation for *Pristina leidyi* . Code in these cells is orientative and not a 100% verbatim of what we did for this project since we ran these chunks of code as separate scripts and/or commands on a live session in an HPC system.
+
+**Sections:**
+
+1.  Generating protein predictions of Pristina transcripts using TransDecoder
+2.  Generating evidences for TF annotation
+
+-   InterproScan Pfam and PANTHER domains\
+-   InterproScan SUPERFAMILY\
+-   BLAST reciprocal best hits\
+-   OrthoFinder
+
+3.  Gathering evidences of TF annotation
+
+# Generating protein predictions of Pristina transcripts using TransDecoder
+
+First of all we need a predicted protein sequence database from the Pristina transcripts. For this, we will use TransDecoder. TransDecoder will generate predicted ORFs from the transcript sequences. We will download the uniprot and pfam databases, and will cross the predicted ORFs against these databases to retain only the ORFs with the best sources of evidence.
+
+```{bash transdecoder, eval=FALSE}
+# Input data
+cd ./00_sequences/
+
+# conda
+source ${PATH_TO_CONDA_BIN_ACTIVATE}
+conda install -c conda-forge mamba
+mamba create -n transdecoder_venv -c bioconda conda-forge transdecoder
+conda activate transdecoder_venv
+
+# Download the databases
+# swissprot
+wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
+# hmmer
+wget https://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/Pfam-A.hmm.gz
+
+# running transdecoder
+TransDecoder.LongOrfs -t $x
+
+# blastp for sequence homology evidence
+blastp -query ${x}.transdecoder_dir/longest_orfs.pep \
+       -db uniprot_sprot.fasta \
+       -max_target_seqs 1 \
+       -outfmt 6 \
+       -evalue 1e-5 \
+       -num_threads 10 > blastp.outfmt6
+
+# hmmer for pfam domain evidence
+hmmscan --cpu 12  \
+        --domtblout pfam.domtblout \
+        ~/DATA/static/databases/pfam/Pfam-A.hmm \
+        ${x}.transdecoder_dir/longest_orfs.pep
+
+# re-run including the evidences, also retain one single best ORF per transcript
+TransDecoder.Predict -t $x \
+                     --retain_pfam_hits pfam.domtblout \
+                     --retain_blastp_hits blastp.outfmt6 \
+                     --single_best_only
+
+#' Clean the names from transdecoder output, plei_longest.pep is the 
+#' definitive protein fasta we will use for downstream analyses
+perl -pe "s/\ ..*//" Pristina.fasta.transdecoder.pep > plei_longest.pep
+perl -pe "s/\ ..*//" Pristina.fasta.transdecoder.pep | \
+grep ">" | \
+perl -pe "s/\>//" > plei_longest.pep.ids.txt
+```
+
+# Generating evidences for TF annotation
+
+**InterproScan Pfam and PANTHER domains**
+
+With our newly-generated protein sequences, we will run InterProScan using the Pfam and PANTHER databases.
+
+After this, we will subset the output to retrieve only the hits against TF domains.
+
+```{bash pfam_tf, eval = FALSE}
+# setup
+cd ./00_sequences/
+x=plei_longest.pep
+interproscan_path=~/programs/interproscan/interproscan-5.56-89.0/interproscan.sh
+PATH_TO_PFAM_TF_DATABASE=~/DATA/static/databases/DBD/20220706_pfam_tfs.txt 
+
+# interpro search for Pfam & PANTHER domains
+${interproscan_path}/interproscan.sh -i $x \
+                                     -d ${x}_interproscan \
+                                     --cpu 12 \
+                                     -goterms \
+                                     --appl Pfam,PANTHER
+
+# subset for TF Pfam & PANTHER domains
+while read p
+  do grep -w $p ${x}_interproscan/${x}.tsv >> Pristina_pfam_tf.pep.tsv
+done < $PATH_TO_PFAM_TF_DATABASE
+```
+
+**InterproScan SUPERFAMILY**
+
+Much like the step above, we will run InterProScan -- this time using the SUPERFAMILY database.
+
+After this, we will subset the output to retrieve only the hits against TF SUPERFAMILY domains.
+
+```{bash interpro_tf, eval = FALSE}
+# setup
+cd ./00_sequences/
+x=plei_longest.pep
+interproscan_path=~/programs/interproscan/interproscan-5.56-89.0/interproscan.sh
+PATH_TO_SFAM_TF_DATABASE=~/DATA/static/databases/DBD/20220706_pfam_SFAM_tfs.txt
+
+# interpro search for SUPERFAMILY domains
+${interproscan_path}/interproscan.sh -i $x \
+                                     -d ${x}_interproscan_SFAM \
+                                     --cpu 12 \
+                                     -goterms \
+                                     --appl SUPERFAMILY
+
+# subset for SUPERFAMILY domains
+while read p
+  do grep -w $p ${x}_interproscan_SFAM/${x}.tsv >> Pristina_superfamily.tf.pep.tsv
+done < $PATH_TO_SFAM_TF_DATABASE
+```
+
+**Blastp**
+
+We will blast the swissprot database against our set of sequences of interest, using a stringent pvalue. We will then do the opposite blast, from our sequences of interest against the swissprot database. We retrieve the columns with the same matches. This is what we take as reciprocal best hits.
+
+These reciprocal best hits will provide additional evidence later on.
+
+```{bash blastp_tf, eval = FALSE}
+# setup, making blast databases
+cd ./00_sequences/
+PATH_TO_SWISSPROT=~/DATA/static/databases/uniprot_swissprot/uniprot_sprot.fasta
+ln -s $PATH_TO_SWISSPROT ./uniprot_sprot.fasta
+makeblastdb -dbtype prot -i ./plei_longest.pep
+makeblastdb -dbtype prot -i ./uniprot_sprot.fasta
+
+# blast pristina vs swissprot
+blastp -query plei_longest.pep \
+       -db uniprot_sprot.fasta \
+       -max_target_seqs 1 \
+       -outfmt 6 \
+       -evalue 1e-5 \
+       -num_threads 10 | \
+       grep "[Tt]ranscription" > plei_swissprot.out
+
+# parse columns
+awk '{OFS="_"} {print($1,$2)}' plei_swissprot.out | \
+ sort | \
+ uniq > plei_swissprot.txt
+
+# blast swissprot vs pristina
+blastp -query uniprot_sprot.fasta \
+       -db plei_longest.pep \
+       -max_target_seqs 1 \
+       -outfmt 6 \
+       -evalue 1e-5 \
+       -num_threads 10 > swissprot_plei.out
+
+# parse columns
+awk '{OFS="_"} {print($2,$1)}' swissprot_plei.out | \
+ sort | \
+ uniq > swissprot_plei.txt
+
+# retrieve intersection
+grep -f swissprot_plei.txt plei_swissprot.txt \
+ > Pristina_swissprot_REPBESTHIT.tsv
+
+```
+
+**OrthoFinder**
+
+We can go a step further and establish groups of orthology with well-annotated species, for which there is functional annotation of transcription factors (such as Homo sapiens or Mouse). We can later transfer the TF annotation of genes from these species to the Pristina sequences that fall within the same group of orthology of a given TF.
+
+For this we can use Orthofinder to establish the groups of Orthology. The important output is the `Orthogroups.tsv` file.
+
+```{bash orthofinder_tf, eval = FALSE}
+cd ./00_sequences/
+# Create a virtual environment where to download orthofinder
+source ${PATH_TO_CONDA_BIN_ACTIVATE}
+mamba create -n orthofinder_venv -c bioconda conda-forge orthofinder gget genomepy
+# Activate it, install: orthofinder, gget, genomepy
+conda activate orthofinder_venv
+
+# Download the genomes from ENSEMBL using genomepy or gget
+# Dmel, Drer,  Hsap,  Mmus,  Pri,  Smed,  Xtro,
+# genomepy install GRCh38 Ensem
+# genomepy install GRCz11 Ensem
+
+mkdir proteomes_TFannot
+cp plei_longest.pep proteomes_TFannot/plei.fa
+mv *.fasta proteomes_TFannot/
+# Download the TF database (items 'TF List' from http://bioinfo.life.hust.edu.cn/AnimalTFDB/#!/download)
+
+# Run orthofinder
+orthofinder -t 12 -M dendroblast -S diamond -f proteomes_TFannot/
+
+# Retrieve Orthogroups.tsv
+cp proteomes_TFannot/Orthofinder/Results_Jul07/Orthogroups/Orthogroups.tsv ./Pristina_TF_orthogroups.tsv
+
+```
+
+We will later run a R script that expands the Orthogroups.tsv file into species X \t species from other animals, merge with TFDB, keep the ones that have match in TFDB, collapse the orthologs, and also the TFclasses.
+
+# Gathering evidences of TF annotation
+
+We made a script in R that pooled all the sources of evidence and assigned a class to each *Pristina* gene based on these results. Below is a copy of said script with added comments to clarify the steps
+
+**Setup**
+
+```{r , eval = FALSE}
+dir <- "~/colabos/pristina/pristina_transcriptomic_landscape"
+setwd(dir)
+
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+library(vroom)
+library(dplyr)
+library(reshape2)
+library(stringi)
+library(VennDiagram)
+display_venn <- function(x, ...){
+  library(VennDiagram)
+  grid.newpage()
+  venn_object <- venn.diagram(x, filename = NULL, ...)
+  grid.draw(venn_object)
+}
+```
+
+**Merging the sources of TF evidence**
+
+```{r, eval = FALSE}
+
+pri_ids <- read.table(
+  "./data/00_sequences/plei_longest.pep.ids.txt"
+) ; colnames(pri_ids) <- c("id")
+
+pri_TFS_fulltable <- data.frame(
+  id = pri_ids$id
+)
+
+### PFAM DBD ###
+
+pfam_list <- read.delim2(
+  "./data/00_sequences/Pristina_superfamily.tf.pep.tsv",
+  header = F
+)
+
+pfam_list <- unique(
+  pfam_list[,c(1,5,6,13,14)]
+)
+colnames(pfam_list) <- c("id","PF","PF_name","PF_group?","GO")
+
+pri_TFS_fulltable <- merge(
+  pri_TFS_fulltable,
+  pfam_list,
+  by.x = 1,
+  by.y = 1,
+  all.x = T
+)
+
+### PFAM SUPERFAMILY ###
+
+supfam_list <- read.delim2(
+  "./data/00_sequences/Pristina_superfamily.tf.pep.tsv",
+  header = F
+)
+
+supfam_list <- unique(
+  supfam_list[,c(1,6,13)]
+)
+colnames(supfam_list) <- c("id","SF_domain","SF_superfam")
+
+pri_TFS_fulltable <- merge(
+  pri_TFS_fulltable,
+  supfam_list,
+  by.x = 1,
+  by.y = 1,
+  all.x = T
+)
+
+### BLASTP REPHIT ###
+
+pri_blastp_list <- read.table(
+  "./data/00_sequences/Pristina_swissprot_REPBESTHIT.tsv",
+  sep="_",
+  header=F
+)
+
+pri_blastp_list <- cbind(
+  pri_blastp_list,
+  V4 = paste(pri_blastp_list$V2,
+             pri_blastp_list$V3,
+             sep="_")
+  )[,c(1,4)]
+colnames(pri_blastp_list) <- c("id","rbhit_organism")
+
+blastp_list_TFs <- read.delim2(
+  "~/DATA/static/databases/uniprot_swissprot/20220708_swissprot_TFs.tsv",
+  header = F
+)
+
+#Filter only hits from TFs and add description
+pri_blastp_list_TFs <- merge(
+  pri_blastp_list,
+  blastp_list_TFs,
+  by.x = 2,
+  by.y = 1
+)[,c(2,1,3)]; colnames(pri_blastp_list_TFs)[3] <- "rbhit_description"
+
+#merge with the full tables of evidence
+pri_TFS_fulltable <- merge(
+  pri_TFS_fulltable,
+  pri_blastp_list_TFs,
+  by.x = 1,
+  by.y = 1,
+  all.x = T
+)
+
+### ORTHOFINDER ANIMALTFDB ###
+
+pri_orthogroups <- vroom(
+  file = "./Pristina_TF_orthogroups.tsv",
+)
+animaltfdb <- read.delim2(
+  "~/DATA/static/databases/animalTFDB/20220707_animalTFDB3_0.tsv",
+  header = T
+)
+
+animaltfdb <- animaltfdb[!(animaltfdb$Species == "Caenorhabditis_elegans"),] #removed c elegans since it was not used in Orthofinder
+animaltfdb <- unique(animaltfdb  %>% separate_rows("Protein"))[,c(5,4,2,1)]
+animaltfdb <- as.data.frame(animaltfdb[!(animaltfdb$Protein == ""),])
+
+pri_orthogroups <- pri_orthogroups[
+  !(is.na ( pri_orthogroups$Pri)),
+]
+
+#Create and properly format a table with every TF protein + orthogroup + symbol ID etc.
+{
+#get the families in a format family <--> gene, could be made into a function?
+pri_fams <- as.data.frame( 
+  pri_orthogroups[,c(1,6)] %>% 
+    melt("Pri") %>%
+    mutate(Pri=strsplit(Pri, ",")) %>% 
+    unnest(Pri)
+)[,c(1,3)] ; colnames(pri_fams) = c("id","og")
+
+#hsap
+hsap_fams <- as.data.frame(
+  pri_orthogroups[c(1,4)] %>% 
+  melt("Hsap") %>%
+  mutate(Hsap=strsplit(Hsap, ",")) %>% 
+  unnest(Hsap)
+)[,c(1,3)] ; colnames(hsap_fams) = c("id","og")
+
+hsap_fams$id <- 
+  stri_replace_all_regex(hsap_fams$id,
+                         pattern=c("N ", "\\..*"),
+                         replacement=c("", ""),
+                         vectorize=FALSE)
+
+hsap_fams <- merge(
+  hsap_fams,
+  animaltfdb,
+  by.x = 1,
+  by.y = 1,
+  all = F
+)
+
+#drer
+drer_fams <- as.data.frame(
+  pri_orthogroups[,c(1,3)] %>% 
+  melt("Drer") %>%
+  mutate(Drer=strsplit(Drer, ",")) %>% 
+  unnest(Drer)
+)[,c(1,3)] ; colnames(drer_fams) = c("id","og")
+
+drer_fams$id <- 
+  stri_replace_all_regex(drer_fams$id,
+                         pattern=c("N ", "\\..*"),
+                         replacement=c("", ""),
+                         vectorize=FALSE)
+
+drer_fams <- merge(
+  drer_fams,
+  animaltfdb,
+  by.x = 1,
+  by.y = 1,
+  all = F
+)
+
+#mmus
+mmus_fams <-as.data.frame(
+  pri_orthogroups[,c(1,5)] %>% 
+  melt("Mmus") %>%
+  mutate(Mmus=strsplit(Mmus, ",")) %>% 
+  unnest(Mmus)
+)[,c(1,3)] ; colnames(mmus_fams) = c("id","og")
+
+mmus_fams$id <- 
+  stri_replace_all_regex(mmus_fams$id,
+                         pattern=c("N ", "\\..*"),
+                         replacement=c("", ""),
+                         vectorize=FALSE)
+
+mmus_fams <- merge(
+  mmus_fams,
+  animaltfdb,
+  by.x = 1,
+  by.y = 1,
+  all = F
+)
+
+#dmel
+dmel_fams <-as.data.frame(
+  pri_orthogroups[,c(1,2)] %>% 
+    melt("Dmel") %>%
+    mutate(Dmel=strsplit(Dmel, ",")) %>% 
+    unnest(Dmel)
+)[,c(1,3)] ; colnames(dmel_fams) = c("id","og")
+
+dmel_fams$id <- 
+  stri_replace_all_regex(dmel_fams$id,
+                         pattern=c("N ", "\\..*"),
+                         replacement=c("", ""),
+                         vectorize=FALSE)
+
+dmel_fams <- merge(
+  dmel_fams,
+  animaltfdb,
+  by.x = 1,
+  by.y = 1,
+  all = F
+)
+
+}
+
+# Merging of all the gfams
+fams_merging <- unique(
+  merge(
+  dmel_fams[,2:4],
+    merge(
+      drer_fams[,2:4],
+      merge(
+        hsap_fams[,2:4],
+        mmus_fams[,2:4],
+        by=1,
+        all=T
+      ),
+      by=1,
+      all=T
+    ),
+  by=1,
+  all=T
+  )
+)
+
+fams_merging$sym <-
+  apply(fams_merging, 1, function(x) {
+    paste(unique(x[c(3, 5, 7, 9)]), collapse = ",")
+  })
+fams_merging$fam <-
+  apply(fams_merging, 1, function(x) {
+    paste(unique(x[c(2, 4, 6, 8)]), collapse = ",")
+  })
+
+fams_TFs <-
+  aggregate(
+    fams_merging,
+    by = list(fams_merging$og),
+    FUN = function(x) {
+      paste(unique(x), collapse = ",")
+    }
+  )[, -1]
+
+#collapse columns into single values, comma-separatd
+fams_TFs$sym <-
+  apply(fams_TFs, 1, function(x) {
+    paste(unique(unlist(strsplit(x[c(3, 5, 7, 9)], ","))), collapse = ",")
+  })
+fams_TFs$fam <-
+  apply(fams_TFs, 1, function(x) {
+    paste(unique(unlist(strsplit(x[c(2, 4, 6, 8)], ","))), collapse = ",")
+  })
+fams_TFs <- fams_TFs[, c(1, 10, 11)]
+
+fams_TFs$sym <- stri_replace_all_regex(fams_TFs$sym,
+                                  pattern=c("NA", ",,", "^,", ",$"),
+                                  replacement=c("", "", "", ""),
+                                  vectorize=FALSE)
+fams_TFs$fam <- stri_replace_all_regex(fams_TFs$fam,
+                                  pattern=c("NA", ",,", "^,", ",$"),
+                                  replacement=c("", "", "", ""),
+                                  vectorize=FALSE)
+
+pri_fams_TFs <- merge(
+  pri_fams,
+  fams_TFs,
+  by.x=2,
+  by.y=1,
+  all = T
+)
+
+pri_TFS_fulltable <- merge(
+  pri_TFS_fulltable,
+  pri_fams_TFs,
+  by.x = 1,
+  by.y = 2,
+  all.x = T
+)
+
+
+# binary presence-absence table to quantify number of evidences
+pri_TFs_yesno <- data.frame(
+  id = pri_TFS_fulltable$id,
+  pfam = ifelse(is.na(pri_TFS_fulltable$PF), 0, 1),
+  sfam = ifelse(is.na(pri_TFS_fulltable$SF_domain), 0, 1),
+  rbhit = ifelse(is.na(pri_TFS_fulltable$rbhit_organism), 0, 1),
+  ogfam = ifelse(is.na(pri_TFS_fulltable$fam),0,1)
+)
+
+pri_TFs_yesno_venn <- list(
+  pfam = subset(pri_TFs_yesno,pfam == 1)$id,
+  sfam = subset(pri_TFs_yesno,sfam == 1)$id,
+  rbhit = subset(pri_TFs_yesno,rbhit == 1)$id,
+  ofgam = subset(pri_TFs_yesno,ogfam == 1)$id
+)
+
+display_venn(pri_TFs_yesno_venn)
+
+#Important: We count 2 sources of evidence as minimum
+pri_TFs_yesno$filt <- 
+  ifelse(
+    rowSums(pri_TFs_yesno[,2:5]) >= 2,
+    TRUE,
+    FALSE
+    )
+
+pri_TFS <- unique(
+  pri_TFS_fulltable[
+    pri_TFS_fulltable$id %in% pri_TFs_yesno$id[pri_TFs_yesno$filt == T]
+    ,c(1,3,6,9,11,12)
+    ]
+  )
+
+colnames(pri_TFS) <- c(
+  "id",
+  "pfam_domain_name",
+  "pfam_superfamily_name",
+  "blastp_RBH_swissprotTFs",
+  "orthofinder_animalTFDB_symbol",
+  "orthofinder_animalTFDB_family"
+)
+
+write.table(
+  pri_TFS,
+  "./outputs/plei_TFs_precurated.tsv",
+  sep ="\t",
+  quote = F,
+  row.names=F
+)
+```
+
+We manually curated this table to assign the same name to the "class" of TFs in the same group, based on names of their blast hits, their Orthofinder ortholog names, etc.
+
+Visual inspection showed major agreement between the different sources of evidence; for example, a TF marked as bZIP by pfam domain annotation is also likely marked as bZIP based on OrthoFinder and animalTFDB evidence.
+
+```{r eval = FALSE}
+plei_tfs <- unique(
+  read.table(
+    "./outputs/plei_TFs_curated.tsv",
+    sep ="\t",
+    header = T
+  )
+)
+
+plei_tfs$class[plei_tfs$class == "TF_bZIP"] <- "bZIP"
+plei_tfs$class[plei_tfs$class == "Homeobox"] <- "Homeodomain"
+plei_tfs$class[plei_tfs$class == "Fork_head"] <- "Forkhead"
+plei_tfs$class[plei_tfs$class == "Homeobox,TF_Otx"] <- "Otx"
+
+plei_tfs$class <- sub("-","_",plei_tfs$class)
+plei_tfs$id <- sub("\\.p.*","",plei_tfs$id)
+
+rownames(plei_tfs) <-  NULL
+plei_tfs$id_class <- paste(
+  plei_tfs$id,
+  plei_tfs$class,
+  sep = "_"
+)
+
+# remove duplicate or non-informative rows (these are generated due to more than one kind of name for some pfam domains, and to a lesser extent, some TFs having two identical domains and such)
+plei_tfs <- 
+  plei_tfs[
+    -c(
+      549,654,270,277,566,290,
+      292,298,299,581,745,304,
+      305,307,755,313,770,856,
+      357
+      ),
+    ]
+
+write.table(
+  plei_tfs,
+  paste(
+    "./",
+    fcha(),
+    "_pristina_TFs_curated.tsv",
+    sep=""
+  ),
+  sep="\t",
+  dec=".",
+  row.names=F,
+  quote=F
+)
+
+write.table(
+  pri_TFS_fulltable,
+  paste(
+    "./",
+    fcha(),
+    "_pristina_TFs_full_table_evidences.tsv",
+    sep=""
+  ),
+  sep="\t",
+  dec=".",
+  row.names=F,
+  quote=F
+)
+
+```
+
+The resulting table `pristina_TFs_curated.tsv` was used for the downstream analyses of the transcriptional landscape of *Pristina leidyi*.

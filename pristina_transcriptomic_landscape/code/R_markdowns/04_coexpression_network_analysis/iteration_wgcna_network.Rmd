@@ -1,0 +1,189 @@
+---
+title: "Iterating WGCNA graph network layouts"
+author: "Alberto Perez-Posada"
+date: "12/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+dir = "/mnt/sda/alberto/colabos/pristina/pristina_transcriptomic_landscape/"
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(eval = FALSE)
+knitr::opts_knit$set(root.dir = dir)
+
+options(scipen=999)
+```
+
+## About
+
+This code can help deciding what thresholds can be chosen for further downstream analysis or plain visualisation of a graph (for a figure etc).
+The printing layout code is based off of Katya Ognyanova's original igraph analysis tutorial on the website https://kateto.net/networks-r-igraph
+
+## Load necessary packages and code:
+
+We will load the igraph library and a custom-made function to parse the networks
+
+## Load data
+
+We first load our graph object.
+
+```{r}
+load("/path/to/wgcna/graph/igraph_object.rda")
+```
+
+## Declaring functions
+
+We will first create a function to plot networks given a graph, an igraph layout object, an igraph layout name and a title (the latter two not needed but useful add the title in the plot).
+
+Below is the code of the function just to document it in a bit more friendly way, but this function should be defined INSIDE the larger function (see below)
+
+```{r plot_layout_function, eval = FALSE}
+plot_layout <- function(graph,layout = NULL, l, title = NULL){
+    plot(
+      main = paste0(title, " ", layout),
+      graph,
+      vertex.size = 1.5,
+      vertex.label = NA,
+      vertex.color = "gray",
+      edge.color = rgb(0,0,0,0.1),
+      layout = l
+    )
+  }
+```
+
+The idea is to call this function from inside another function that parses a number of layouts and dumps the plot in a series of png files named after the layouts and a name of choice, in a path chosen by the user
+
+```{r plot_the_network_function}
+plot_the_network <- function(graph,layouts,savepng, graph_name, title_plot){
+  
+  plot_layout <- function(graph,layout, l, title){
+    plot(
+      main = paste0(title, " ", layout),
+      graph,
+      vertex.size = 1.5,
+      vertex.label = NA,
+      vertex.color = "gray",
+      edge.color = rgb(0,0,0,0.1),
+      layout = l
+    )
+  }
+  
+  for (layout in layouts) {
+    
+    print(layout) # Visual feedback
+    
+    l <- do.call(layout, list(graph)) 
+
+    path_savepng <- paste0(
+      savepng,
+      fcha(),
+      "_",
+      layout,
+      "_",
+      graph_name,
+      "_network.png"
+      )
+    
+    png(
+      path_savepng,
+      wi = 1500, hei = 1500 , units = "px"
+    )
+    plot_layout(
+      graph = graph,
+      layout = layout,
+      title = title_plot
+      )
+    dev.off()
+  }
+}
+```
+
+## Choosing layouts and thersholds
+
+`igraph` offers a variety of layouts and one could even try to code their own layout algorithms in R, as long as the code returns a 2-col table with X and Y coordinates for the genes in the same order they are found inside the igraph object:
+
+```{r layouts}
+layouts <- c(
+  # "layout_with_drl",
+  # "layout_nicely",
+  "layout_with_kk",
+  "layout_components",
+  "layout_with_fr",
+  "layout_with_mds"
+)
+layouts
+```
+
+We create a number of thresholds to use for visualising the network.
+
+```{r thresholds}
+thresholds <- seq(0,0.95,by=0.05)
+# thresholds <- seq(0.15,0.95, by = 0.005)
+thresholds
+```
+
+## Iterating
+
+We pick a saving directory and a potential name prefix for our files:
+
+```{r}
+save_dir = "./iterations_threshold/"
+prefix = "plei_"
+```
+
+At the moment we **don't** have a list of attributes to add to the network.
+
+```{r}
+parsenetwork = FALSE
+```
+
+We can run the `for` loop below to iterate. For each threshold value, this for loop will call the `plot_the_network` function, to plot the subsetted network in different layouts, and will save the plots as png in our path of choice.
+
+```{r forloop}
+for (thresh in thresholds) {
+  # Visual feedback
+  print(thresh)
+  
+  # Create a graph name using the threshold value
+  graphname <- paste0(prefix,thresh) 
+  
+  # Subset the graph based on the edges with a value above the threshold
+  graph_iter <- subgraph.edges(
+    plei_graph0,
+    eids = which(E(plei_graph0)$weight >= thresh),
+    delete.vertices = TRUE
+    )
+  
+  if (parsenetwork == FALSE) {
+    graph <- graph_iter
+  } else {
+    # We parse the network to add all the data needed to vertices and edges (not needed)
+    parse <- ParseNetwork(graph_iter, attributes_list) # ATTR LIST TO BE PASSED DOWN TO THIS FUNCTION NEEDS TO BE ADDED TO THE MARKDOWN
+  
+    # We subset the parsenetwork object to retrieve the graph
+    graph <- parse[[1]]
+  }
+  
+  
+  # More visual feedback: tell how many genes there are in the network
+  print(
+    paste0(graphname, ": ", vcount(parse[[1]]), " genes")
+    )
+  
+  # We call the network plotting function
+  plot_the_network(
+    graph = graph,
+    layouts = layouts,
+    savepng = save_dir,
+    graph_name = graphname,
+    title_plot = graphname
+    )
+  }
+
+```
+
+The plots are saved in `save_dir` with the name `YYYYMMDD_{prefix}_{threshold}_{layout}_network.png`.
+
+**Note** that this script can take a lot of time to run because it depends entirely on your graph object (size, number of edges etc.). Bear that in mind.

@@ -1,0 +1,522 @@
+---
+title: 'Pristina Transcriptomic Landscape: DGE analysis (library-wise)'
+author: "Alberto Perez-Posada @apposada"
+date: "15/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+dir <- '/mnt/sda/alberto/colabos/pristina/pristina_transcriptomic_landscape/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_knit$set(root.dir = dir)
+knitr::opts_chunk$set(echo = TRUE)
+options(scipen=999)
+options(stringsAsFactors = FALSE)
+
+```
+
+## About
+
+This markdown shows how we performed differential gene expression analysis in *Pristina leidyi* using pseudocount tables from different sequencing experiments as separate replicates.
+
+We will use the wrapper function implemented in the limma.rmd markdown for clarity and ease, but please refer to said markdown for a detailed analysis.
+
+## Loading Necessary Packages and code
+
+```{r load_packages, warning = FALSE, message=FALSE}
+require(data.table)
+require(tibble)
+require(dplyr)
+require(tidyr)
+require(apeglm)
+require(ggplot2)
+require(ggrepel)
+require(EnhancedVolcano)
+require(edgeR)
+require(limma)
+```
+
+We will load the wrapped function:
+
+```{r}
+source("./code/R_functions/limma_wrap.R")
+```
+
+## Loading table of cell types
+
+```{r ctypes_table}
+plei_ctypes <- read.delim2(
+  "./data/01_celltypedata/plei_ctypes.tsv",
+  header = T
+)
+
+plei_ctypes$leiden_sort <- 
+  factor(
+    paste(
+      plei_ctypes$Names_leiden_1.5, 
+      formatC(plei_ctypes$Cluster, width = 2, format = "d", flag = "0"), #2-digit number of cluster
+      sep ="_" # name of the cluster
+      ),
+    levels = paste( # arrange cluster names by original ordering of the table (i.e. 'broad' cell type, hand-made order)
+      plei_ctypes$Names_leiden_1.5,
+      formatC(plei_ctypes$Cluster, width = 2, format = "d", flag = "0"),
+      sep ="_"
+    )
+  )
+
+plei_ctypes <- plei_ctypes[order(plei_ctypes$Cluster),] #sort by numeric order 
+
+#table cluster name - color, for annotating purposes
+plei_ctypes_col <- data.frame( 
+  cluster = plei_ctypes$leiden_sort,
+  col = plei_ctypes$Colours
+)
+
+plei_ctypes_col <- plei_ctypes_col[order(plei_ctypes_col$cluster),]
+rownames(plei_ctypes_col) <-  NULL
+plei_ctypes_col <- plei_ctypes_col[1:49,] # we discard unannotated clusters
+
+head(plei_ctypes[,1:5])
+```
+
+## Loading necessary dataset
+
+We will load the tables of each experiment and will merge them together to provide a unique expression dataset to limma.
+
+```{r load_data}
+counts_l12 <- 
+  read.delim2(
+    "./data/02_geneexpression/Pristina_atlas_counts_exp_lib_12.tsv",
+    row.names = 1
+  ) ; counts_l12$X59 <- 0
+# counts_l12$X49 <- 0
+counts_l21 <- 
+  read.delim2(
+    "./data/02_geneexpression/Pristina_atlas_counts_exp_lib_21.tsv",
+    row.names = 1
+  )
+counts_l30 <- 
+  read.delim2(
+    "./data/02_geneexpression/Pristina_atlas_counts_exp_lib_30.tsv",
+    row.names = 1
+  )
+```
+
+We set up the column names now.
+Because we arranged the table following cluster 0,1,... the naming order gets preserved.
+We also remove columns corresponding to un-annotated clusters (see Methods).
+
+```{r counts_colnames_L12}
+colnames(counts_l12) <- plei_ctypes$leiden_sort #because we arranged the table following cluster 0,1,... the naming order gets preserved
+counts_l12 <- setcolorder(counts_l12, neworder = as.character(plei_ctypes_col$cluster)) # set column order by broadtype (see above)
+colnames(counts_l12) <- paste0("L12_", colnames(counts_l12))
+counts_l12 <- counts_l12[,1:49] #remove un-annotated clusters
+head(counts_l12[,1:5])
+```
+
+```{r counts_colnames_L21}
+colnames(counts_l21) <- plei_ctypes$leiden_sort #because we arranged the table following cluster 0,1,... the naming order gets preserved
+counts_l21 <- setcolorder(counts_l21, neworder = as.character(plei_ctypes_col$cluster)) # set column order by broadtype (see above)
+colnames(counts_l21) <- paste0("L21_", colnames(counts_l21))
+counts_l21 <- counts_l21[,1:49] #remove un-annotated clusters
+head(counts_l21[,1:5])
+```
+
+```{r counts_colnames_L30}
+colnames(counts_l30) <- plei_ctypes$leiden_sort #because we arranged the table following cluster 0,1,... the naming order gets preserved
+counts_l30 <- setcolorder(counts_l30, neworder = as.character(plei_ctypes_col$cluster)) # set column order by broadtype (see above)
+colnames(counts_l30) <- paste0("L30_", colnames(counts_l30))
+counts_l30 <- counts_l30[,1:49] #remove un-annotated clusters
+head(counts_l30[,1:5])
+```
+
+```{r}
+counts <- merge(
+  # merge(
+  #   counts_l12,
+  #   counts_l21,
+  #   by = 0,
+  #   all = TRUE
+  # ),
+  counts_l21,
+  counts_l30,
+  by.x = 0,
+  by.y = 0,
+  all = TRUE
+) %>% column_to_rownames("Row.names")
+```
+
+# 1: Data exploration. Library size
+
+We will be using the package `limma` (and `edgeR`) to analyse the differential expression of genes in the piwi-positive clusters compared to the rest of the clusters.
+
+The package `limma` has its own methods to take into account library size and normalisation and therefore we will be NOT using the normalised counts we obtained from DESeq2.
+
+We start by remembering the looks of the reads in each cluster of cells in Pristina. For simplicity over the rest of the markdown, we will call this table "`counts`" .
+
+```{r boxplot_counts}
+boxplot(log(counts+1), col = plei_ctypes_col$col, cex = 0.5, border = ggplot2::alpha("black",0.05))
+```
+
+A different way to see the same
+
+```{r lib_size_barplot}
+libsize <- as.data.frame(colSums(counts))
+colnames(libsize) <- "LibSize"
+libsize$id <- as.factor(row.names(libsize))
+libsize$color <- plei_ctypes_col$col
+
+barplot(libsize$LibSize,col = libsize$color, names = libsize$id, las = 2)
+```
+
+# 2. The sample information
+
+We will create a table with all the information of our "samples" (the cell cluster), as well as this time **the information of each replicate**.
+
+Importantly now that we have replicates, we will be able to compare different groups of cells e.g. from the same broad type.
+
+```{r samples_info}
+samples.info = data.frame(
+  sample = colnames(counts),
+  library = sub("_..*","",colnames(counts)),
+  cellcluster = sub("L[0-9]{2}_","",colnames(counts)),
+  broadtype = rep(
+    plei_ctypes$Broad_Type[order(plei_ctypes$leiden_sort)]
+    [-c(50:60)],2
+    )
+)
+rownames(samples.info) <- colnames(counts)
+
+head(samples.info)
+```
+
+# 3. Filtering the gene expression dataset for DGE
+
+We will create an `edgeR` `DGE` object using our `counts` and `samples.info` data. 
+
+```{r dge}
+ dge <- DGEList(
+    counts=counts,
+    samples=samples.info,
+    group=samples.info$cellcluster
+  )
+```
+
+`edgeR` has a function that allows to filter by gene expression taking into account library size.
+Quoting:
+
+"This function implements the filtering strategy that was intuitively described by Chen et al (2016). Roughly speaking, the strategy keeps genes that have at least min.count reads in a worthwhile number samples.More precisely, the filtering keeps genes that have count-per-million (CPM) above k in n samples, where k is determined by min.count and by the sample library sizes and n is determined by the design matrix."
+
+The output returned is a logical vector indicating which rows to keep in the analysis.
+
+```{r filter_dge}
+  keep <- filterByExpr(dge)
+  dge <- dge[keep,,keep.lib.sizes=FALSE]
+```
+
+# 4. The Design Matrix
+
+Next is the creation of the design matrix that can be later passed down to limma to work out a linear model. 
+
+```{r model_matrix}
+design.condition <- model.matrix( ~ samples.info$cellcluster, dge)
+# parsing the columns to have prettier names
+colnames(design.condition) <- gsub("samples.info[$]cellcluster", "", colnames(design.condition))
+colnames(design.condition) <- gsub("samples.info[$]sample", "", colnames(design.condition))
+names(attr(design.condition,"contrasts")) <- c("condition")
+rownames(design.condition) <- rownames(samples.info)
+
+design.condition[1:5,1:5]
+```
+
+# 5. Scaling factors to transform the libraries
+
+We are now ready to run `limma`. The first step is calculating scaling factors to transform the library sizes. The default methods uses trimmed mean of M-values.
+
+```{r}
+dge <- calcNormFactors(dge, method="TMM")
+```
+
+# 6. Normalisation of gene expression using VOOM method
+
+Because we are working with libraries of drastically different sizes, we will transform the data to log2CPM using the `voom` method as suggested in the documentation. From the documentation: \[...\]\[It\] will estimate the mean-variance relationship and use this to compute appropriate observation-level weights. The data are then ready for linear modelling.
+
+```{r}
+v <- voom(dge, design.condition, plot=TRUE)
+```
+
+# 7. Linear Model Fitting and statistics
+
+This expression data is now ready for linear model fitting. The `lmFit` will fit a linear model for each gene given the conditions in the design matrix.
+
+```{r}
+fitv <- lmFit(v, design.condition)
+```
+
+From this fitting, the `eBayes` function computes the statistics and log-odds of differential expression, for later ranking the genes in order of evidence for DGE, and appends it to the `fitv` object.
+
+```{r}
+contrast.matrix <- makeContrasts(
+  piwi_pos_cells_2_02vspiwi_pos_cells_1_01 = "piwi_pos_cells_2_02 - piwi_pos_cells_1_01",
+  levels=design.condition
+  )
+
+colnames(design.condition)[1] <- "Intercept"
+colnames(fitv$coefficients)[1] <- "Intercept"
+
+fitv <- contrasts.fit(fitv, contrast.matrix)
+
+fitv <- eBayes(fitv)
+```
+
+The summary of the results here:
+
+```{r}
+sumfit <- summary(decideTests(fitv))
+sumfit
+```
+
+# 8. Results and plotting
+
+The `topTable` retrieves a table of the top-ranked genes. We will use `fdr` as the adjusting (correction) method.
+
+```{r}
+top.res.v <- topTable(fitv, coef=ncol(design.condition), 
+                        adjust="fdr", sort.by="B",
+                        number=Inf)
+```
+
+We can tidy up the contents of the top table and add a `rank` column that indicates if a gene is differentially expressed or not.
+
+We will set up a minimum threshold of 1.5 for the logFoldChanges in gene expression and a p-value of 0.01 as what we will consider as significant.
+
+```{r}
+MIN.FC = 1.5
+MIN.PV = 0.01
+```
+
+And then the column itself:
+
+```{r}
+top.res.v$rank <- ifelse(is.na(top.res.v$P.Value) | is.na(top.res.v$logFC), NA,
+                         -log10(top.res.v$P.Value)*top.res.v$logFC *
+                           ifelse(top.res.v$P.Value <= MIN.PV & abs(top.res.v$logFC) >= MIN.FC,
+                                  ifelse(top.res.v$adj.P.Val <= MIN.PV, 1e4, 1e2), 1))
+```
+
+More tidying up based on our criteria. The important column here is `$DGE.padj` that will tell us if a gene is significantly differentially expressed or not based on its adjusted p-value (after correction).
+
+```{r}
+top.res.v$DGE.pval <- as.factor(
+  ifelse(top.res.v$P.Value <= MIN.PV & abs(top.res.v$logFC) >= MIN.FC,
+           ifelse(top.res.v$logFC >= MIN.FC, "up", "down"), "no-sig") )
+  
+top.res.v$DGE.padj <- as.factor(
+  ifelse(top.res.v$adj.P.Val <= MIN.PV & abs(top.res.v$logFC) >= MIN.FC,
+         ifelse(top.res.v$logFC >= MIN.FC, "UP", "DOWN"), "no-sig") )
+```
+
+The number of DEG with and without correction
+
+```{r}
+UPDN <- c(nrow(top.res.v[ top.res.v$DGE.padj == "UP", ]),
+          nrow(top.res.v[ top.res.v$DGE.padj == "DOWN", ]))
+updn <- c(nrow(top.res.v[ top.res.v$DGE.pval == "up", ]),
+          nrow(top.res.v[ top.res.v$DGE.pval == "down", ]))
+
+paste0("WithOUT correction: ", updn, " genes", c(" up"," down"))
+paste0("With correction: ", UPDN, " genes", c(" up"," down"))
+```
+
+To visualise all this information more nicely, a volcano plot from the package `EnhancedVolcano`.
+
+```{r}
+volcanoplot.limma.v <- EnhancedVolcano(
+  data.frame(top.res.v), x = 'logFC', y = 'adj.P.Val',
+  lab = rownames(top.res.v),
+  xlab = bquote(~Log[2]~ 'fold change'),
+  ylab = bquote(~-Log[10]~adjusted~italic(P)),
+  ylim = c(0, 6),
+  pCutoff = MIN.PV, FCcutoff = MIN.FC, pointSize = 1.0, labSize = 2.0,
+  title = paste0("Piwi vs non-Piwi"),
+  subtitle = 'limma-voom analysis',
+  caption = paste0('log2 FC cutoff: ', MIN.FC, '; p-value cutoff: ',
+                   MIN.PV, '\nTotal = ', nrow(top.res.v),
+                   ' markers  [ ',UPDN[1],'UP, ',UPDN[2],'DOWN ]'),
+  legendPosition = 'bottom', legendLabSize = 14, legendIconSize = 5.0,
+  drawConnectors = TRUE, widthConnectors = 0.25,
+  colConnectors = 'grey30',
+  gridlines.major = FALSE,
+  gridlines.minor = TRUE,
+  col = c("gray","#a2d9a6","darkgray","#4eaf55")
+) + coord_flip()
+```
+
+And its visualisation:
+
+```{r fig.width = 6, fig.height = 8}
+print(volcanoplot.limma.v)
+```
+
+We can save the results in a table:
+
+```{r eval = FALSE}
+write.table(
+  top.res.v[top.res.v$DGE.padj != "no-sig",],
+  paste0(
+    "./outputs/",
+    "plei_piwi_vs_all_DGE.tsv"
+  ),
+  sep = "\t",
+  dec = ".",
+  row.names = TRUE,
+  quote = FALSE
+)
+```
+
+## Downstream analyses
+
+These genes can be further analysed by checking their enriched GO terms compared to the set of all genes in pristina, or other group of differentially expressed genes.
+
+```{r go_terms, error= FALSE, message=FALSE, warning=FALSE}
+source("./code/R_functions/wgcna_igraph_functions/topGO_wrap_function.R")
+geneID2GO <- readMappings("./data/04_eggNOGannotation/plei_eggnog_GOs.tsv")
+
+plei_piwi_GO <- getGOs(
+  genelist = list(
+    piwi_up = rownames(top.res.v[top.res.v$DGE.padj == "UP",])
+    ),
+  gene_universe = rownames(plei_cpm),
+  gene2GO = geneID2GO
+)
+```
+
+The resulting GO terms are seen below. It seems these genes are enriched in GO terms related to gene expression and cell proliferation, as described for other pluripotent lineages in other regenerative animals such as planarians neoblasts.
+
+```{r go_table}
+res_GOs <- plei_piwi_GO$GOtable$piwi_up
+res_GOs
+```
+
+
+## A wrapper function
+
+We have wrapped everything in a function that can be readily used to retrieve differentially expressed genes from a matrix of gene expression (pre-normalisation), a table of sample information, and a condition to compare against.
+
+```{r}
+limma_wrap <- function(
+  counts, samples.info, condition, MIN.PV = 0.05, MIN.FC = 1.5, adjust = "fdr",
+  plot = FALSE){
+  # counts = plei_counts[,1:2]
+  # samples.info <- plei_samples_info[1:2,]
+  # condition = "cellcycle_stage"
+  # print(paste0("Condition chosen = ",condition))
+  
+  samples.info$condition <- samples.info[,colnames(samples.info) == condition ]
+  
+  print("Creating DGE objects")
+  dge <- DGEList(
+    counts=counts,
+    samples=samples.info,
+    group=samples.info$condition
+  )
+  dge
+  keep <- filterByExpr(dge)
+  dge <- dge[keep,,keep.lib.sizes=FALSE]
+  
+  # if(ncol(counts) <= 2) {dge <- t(dge)}
+  
+  print("Creating model matrix")
+  design.condition <- model.matrix( ~ samples.info$condition, dge)
+  colnames(design.condition) <- gsub("samples.info[$]condition", "", colnames(design.condition))
+  colnames(design.condition) <- gsub("samples.info[$]sample", "", colnames(design.condition))
+  names(attr(design.condition,"contrasts")) <- c("condition")
+  rownames(design.condition) <- rownames(samples.info)
+  
+  print(paste0('The largest library has: ',max(dge$samples$lib.size),' counts'))
+  print(paste0('The smallest library has: ',min(dge$samples$lib.size),' counts'))
+  print(paste0("That's ", round(max(dge$samples$lib.size)/min(dge$samples$lib.size),1), " times bigger"))
+  
+  
+  #ready to run LIMMA
+  print("Ready to run limma.")
+  
+  print("Calculating factors")
+  dge <- calcNormFactors(dge, method="TMM")
+  
+  print("voom normalisation")
+  v <- voom(dge, design.condition, plot=plot) #it finds more DE genes using qnorm
+  
+  print("limma linear model fitting")
+  fitv <- lmFit(v, design.condition)
+  fitv <- eBayes(fitv)
+  sumfit <- summary(decideTests(fitv))
+  
+  print("creating results")
+  top.res.v <- topTable(fitv, coef=ncol(design.condition), 
+                        adjust=adjust, sort.by="B",
+                        number=Inf)
+  
+  top.res.v$rank <- ifelse(is.na(top.res.v$P.Value) | is.na(top.res.v$logFC), NA,
+                           -log10(top.res.v$P.Value)*top.res.v$logFC *
+                             ifelse(top.res.v$P.Value <= MIN.PV & abs(top.res.v$logFC) >= MIN.FC,
+                                    ifelse(top.res.v$adj.P.Val <= MIN.PV, 1e4, 1e2), 1));
+  
+  print("adjusting pvalues")
+  top.res.v$DGE.pval <- as.factor(
+    ifelse(top.res.v$P.Value <= MIN.PV & abs(top.res.v$logFC) >= MIN.FC,
+           ifelse(top.res.v$logFC >= MIN.FC, "up", "down"), "no-sig") );
+  
+  top.res.v$DGE.padj <- as.factor(
+    ifelse(top.res.v$adj.P.Val <= MIN.PV & abs(top.res.v$logFC) >= MIN.FC,
+           ifelse(top.res.v$logFC >= MIN.FC, "UP", "DOWN"), "no-sig") );
+  
+  UPDN <- c(nrow(top.res.v[ top.res.v$DGE.padj == "UP", ]),
+            nrow(top.res.v[ top.res.v$DGE.padj == "DOWN", ]))
+  updn <- c(nrow(top.res.v[ top.res.v$DGE.pval == "up", ]),
+            nrow(top.res.v[ top.res.v$DGE.pval == "down", ]))
+  
+  
+  print("creating plot")
+  volcanoplot.limma.v <- EnhancedVolcano(
+    data.frame(top.res.v), x = 'logFC', y = 'adj.P.Val',
+    lab = rownames(top.res.v),
+    xlab = bquote(~Log[2]~ 'fold change'),
+    ylab = bquote(~-Log[10]~adjusted~italic(P)),
+    ylim = c(0, 6),
+    pCutoff = MIN.PV, FCcutoff = MIN.FC, pointSize = 1.0, labSize = 2.0,
+    title = paste0("Piwi vs non-Piwi"),
+    subtitle = 'limma-voom analysis',
+    caption = paste0('log2 FC cutoff: ', MIN.FC, '; p-value cutoff: ',
+                     MIN.PV, '\nTotal = ', nrow(top.res.v),
+                     ' markers  [ ',UPDN[1],'UP, ',UPDN[2],'DOWN ]'),
+    legendPosition = 'bottom', legendLabSize = 14, legendIconSize = 5.0,
+    drawConnectors = TRUE, widthConnectors = 0.25,
+    colConnectors = 'grey30',
+    gridlines.major = FALSE,
+    gridlines.minor = TRUE,
+    col = c("gray","#a2d9a6","darkgray","#4eaf55")
+    # max.overlaps = 10,
+  ) + coord_flip()
+  
+  if(plot == TRUE){
+    print(volcanoplot.limma.v)
+  }
+  
+  res <- list(
+    input_information = samples.info,
+    design = design.condition,
+    summary_fit = sumfit,
+    results = top.res.v,
+    volcanoplot = volcanoplot.limma.v
+  )
+  
+  print("DONE.")
+  
+  
+  return(res)
+  
+}
+```

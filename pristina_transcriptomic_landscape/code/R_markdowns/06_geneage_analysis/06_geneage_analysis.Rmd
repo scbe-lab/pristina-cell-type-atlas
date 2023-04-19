@@ -1,0 +1,571 @@
+---
+title: "Pristina gene age analysis and annelid-specific TF analysis"
+author: "Alberto Perez-Posada @apposada"
+date: "20/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+dir <- '/mnt/sda/alberto/colabos/pristina/pristina_transcriptomic_landscape/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+options(stringsAsFactors = FALSE)
+```
+
+## About
+
+In this markdown we will analyse the transcription factors that are annelid-specific.
+
+For this, we will subset the list of TFs to keep those that:
+1) do NOT have a match in orthofinder
+2) were originated in annelids or the stem lineage that led to Pristina (based on Orthofinder analysis)
+
+```{bash orthofinder_setup, eval = FALSE}
+source ~/programs/miniconda3/bin/activate
+mamba create -n orthofinder_venv -c bioconda -c conda-forge orthofinder
+conda activate orthofinder_venv
+```
+
+
+```{bash orthofinder_run, eval = FALSE}
+orthofinder -f ./proteomes/ 
+```
+
+(Important comments raised by Daniel Leite)
+Play around with inflation parameter to see if breaking down orthogroups
+shifts the signal of the gene age enrichment up to species-specific/new
+origin / distal nodes
+
+Also, optimization problem check how many orthogroups you retrieve with
+different values of inflation similar to clustree (i think they said
+clustree?). similar to sinusoid curves etc.
+
+Which inflation values provide high confidence reliable orthogroups all the time.
+
+ ---
+
+We used the software Count (Csuros, 2010) to count the presence/absence of gene families in each lineage and infer an evolutionary age using Dollo parsimony.
+
+The resulting output is in `./07_geneage_data/Dollo.tsv` and `./07_geneage_data/Dollo.tsv`.
+
+## R gene age analysis
+
+We will use the version 0.1 of the comparABle functions as well as custom functions to parse the gene age and dollo parsimony tables.
+
+```{r geneage_setup, warning=FALSE, message=FALSE}
+source("~/projects/dev/comparABle/code/functions/basic_functions.r")
+source("~/projects/dev/comparABle/code/functions/main_functions.R")
+source("~/projects/dev/comparABle/code/functions/tidyup_functions.R")
+source("~/projects/dev/comparABle/code/functions/cog_analysis.R")
+source("~/projects/dev/comparABle/code/functions/geneage.R")
+source("~/projects/dev/comparABle/code/functions/genes_in_fams.R")
+source("~/projects/dev/comparABle/code/functions/getGOs.R")
+source("~/projects/dev/comparABle/code/functions/plotting_functions.R")
+source("./code/R_functions/comparABle/gfams_age_functions.R")
+
+require(data.table)
+require(stringr)
+require(tidytree)
+require(rvcheck)
+require(ComplexHeatmap)
+require(foreach)
+require(doParallel)
+require(colorspace)
+
+load("./outputs/rda/02_tf_analysis.rda")
+load("./outputs/rda/03_wgcna_analysis.rda")
+```
+
+
+
+```{r}
+plei_gfams_dir <- 
+  "~/colabos/pristina/outputs/orthofinder/orthofinder_20221028/proteomes/OrthoFinder/Results_Nov01/Orthogroups/"
+plei_dollo_dir <- 
+  "~/colabos/pristina/outputs/orthofinder/orthofinder_20221028/count_dollo_parsimony/"
+```
+
+
+
+```{r}
+plei_gfams <- get_fams_and_age(
+  gfams_table = read.delim2(
+    paste0(plei_gfams_dir,"Orthogroups.tsv"),
+    header = T
+  ),
+  species_of_interest = "Plei",
+  dollo_table = read.delim2(
+    paste0(plei_dollo_dir,"Dollo.tsv"),
+    header = T,
+    skip = 1
+  ),
+  ages_table = read.table(
+    paste0(plei_dollo_dir,"20221101_ages.tsv"),
+    header = T
+  )
+)
+
+head(plei_gfams)
+```
+
+The gene age enrichment function
+
+```{r gene_age, fig.width=7, fig.height=7}
+plei_modules_geneage <- 
+  gene_age_enrichment(
+    x_modules = plei_id_module,
+    x_age = plei_gfams[,c(1,4)],
+    fisher_pval = 0.01
+    )
+
+draw(plei_modules_geneage$heatmap)
+```
+
+We can subset our list of TFs to keep only those that emerged in the stem lineage that led to *Pristina*
+
+```{r}
+plei_tfs_annelid <- 
+  plei_tfs[
+    plei_tfs$id %in% plei_gfams$id[plei_gfams$age_num <= 7], # 7 being annelida and 1 being pristina-specific
+  ]
+```
+
+And for a visualisation:
+
+```{r fig.height=8,fig.width=11}
+Heatmap(
+  name="norm\nexpr",
+  t(scale(t(
+    plei_tfs_cpm[
+      rownames(plei_tfs_cpm) %in% plei_tfs_annelid$id,
+      ]
+    ))),
+  top_annotation=clu_ha,
+  show_row_names = TRUE,
+  cluster_columns = FALSE,
+  show_column_names = FALSE,
+  clustering_method_rows = "ward.D2",
+  col = rev(colorspace::sequential_hcl(10,"YlOrRd"))
+)
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+
+
+## COG enrichment analysis
+
+We load the COGs
+
+```{r}
+plei_cogs <- read.table(
+  "./outputs/eggnog/20221103_plei_COGs.tsv",
+  header = F,
+  col.names = c("id","cog")
+)
+
+plei_cogs <- as.data.frame(
+  separate_rows(plei_cogs, cog, sep = '(?<=.)(?=.)')
+)
+
+plei_cogs <- plei_cogs[(plei_cogs$cog %in% LETTERS),]
+
+head(plei_cogs)
+
+```
+
+A table of equivalences letters-COG actual name
+
+```{r}
+cogs_functionalcategories <- read.table(
+  "/mnt/sda/alberto/DATA/static/databases/COG/COG_functional_categories.tsv",
+  sep = "\t",
+  header = T
+)
+```
+
+The COG enrichment analysis
+
+```{r}
+plei_module_cogs <- 
+  cog_enrichment_analysis(
+    x_modules = plei_id_module,
+    x_cog = plei_cogs,
+    functional_categories = TRUE
+)
+```
+
+The COG heatmap (modified, using the following, )
+
+```{r}
+col_cogs <- colorRamp2(
+  breaks = c(seq(-20,-0.1,length = 19),0,seq(0.1,20,length = 20)),
+  colors = c(
+    colorRampPalette(c("#669BD1","white"))(20)[1:19],
+    colorRampPalette(c("white","#E29546"))(21)
+  )
+)
+draw(
+  plei_module_cogs,
+  col = col_cogs,
+  show_row_dend = FALSE,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  row_names_gp = grid::gpar(fontsize = 8),
+  column_names_gp = grid::gpar(fontsize = 8),
+)
+```
+
+
+
+## Conserved gene families across network modules
+
+Can be performed using the `comparemodules` function
+
+```{r}
+modulecomp_ab <- comparemodules(ma,mb,f)
+```
+
+Some heatmaps to visualise the outcome
+
+```{r}
+pheatmap(
+  modulecomp_ab$loghypg,
+  col = rev(sequential_hcl(10,"YlOrBr")),
+  cluster_cols = T,
+  cluster_rows = T
+)
+
+pheatmap(
+  modulecomp_ab$logbinom,
+  col = rev(sequential_hcl(10,"Blues 3")),
+  cluster_cols = T,
+  cluster_rows = T
+)
+```
+
+We can explore what are these gene families in common using `genes_in_key_fams`:
+
+```{r}
+plei_key_genes_in_fams <- genes_in_key_fams (
+  stats = modulecomp_ab$stats,
+  f = f,
+  ma = ma,
+  mb = mb,
+  top_comparisons = 20,
+  same_species = TRUE,
+  common = TRUE,
+  exclusive = FALSE,
+  age_a = ga,
+  cog_a = plei_cogs,
+  universe = rownames(a),
+  universe_a = rownames(a),
+  gene2go_a = geneID2GO,
+  age_b = ga,
+  cogs_b = plei_cogs,
+  universe_b = rownames(a),
+  gene2go_b = geneID2GO
+  )
+
+plei_key_genes_in_fams$commonfams$go_a_common$GOtable
+```
+
+This works for individual cases as well, if we specify which groups we want to compare (e.g. module muscle and module neurons)
+
+```{r}
+test <- genes_in_key_fams (
+  module_a = "42_neurons_4",
+  module_b = "30_muscle_4",
+  stats = modulecomp_ab$stats,
+  f = f,
+  ma = ma,
+  mb = mb,
+  top_comparisons = 20,
+  same_species = TRUE,
+  common = TRUE,
+  exclusive = FALSE,
+  age_a = ga,
+  cog_a = plei_cogs,
+  universe = rownames(a),
+  universe_a = rownames(a),
+  gene2go_a = geneID2GO,
+  age_b = ga,
+  cogs_b = plei_cogs,
+  universe_b = rownames(a),
+  gene2go_b = geneID2GO
+)
+```
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+
+
+
+
+

@@ -1,0 +1,212 @@
+---
+title: "Broad Ctype Normalisation"
+author: "Alberto Perez-Posada @apposada"
+date: "2/28/2023"
+output:
+  html_document: default
+  pdf_document: default
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+
+dir <- '/mnt/sda/alberto/colabos/pristina/pristina_transcriptomic_landscape/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+
+```
+
+## Loading Necessary Packages
+
+```{r warning = FALSE, message=FALSE}
+library(vroom)
+library(reshape2)
+library(ComplexHeatmap)
+library(circlize)
+library(viridis)
+library(colorspace)
+library(RColorBrewer)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(gplots)
+library(data.table)
+library(DESeq2)
+```
+
+## Data Load
+
+First we will load a table containing information of the different cell types to inform on cluster identity, annotate the plots with colors, etc.
+
+```{r ctypes_table}
+plei_ctypes <- read.delim2(
+  "./data/01_celltypedata/plei_ctypes.tsv",
+  header = T
+)
+
+#table cluster name - color, for annotating purposes
+plei_ctypes_broad_col <- unique(data.frame( 
+  broad = plei_ctypes$Broad_Type,
+  col = plei_ctypes$Colour_group
+))
+
+head(plei_ctypes[,1:5])
+```
+
+We begin our with a matrix of transcript counts summed at the pseudo-bulk level of BROAD cell types.
+
+```{r counts_setup}
+plei_counts_broad_all <- vroom(
+  "./data/02_geneexpression/Pristina_atlas_counts_broad.tsv",
+  col_names=T
+)
+
+plei_counts_broad_all[,2:19] <- plei_counts_broad_all[,2:19]
+
+plei_counts_broad <- as.data.frame(plei_counts_broad_all)
+
+rownames(plei_counts_broad) <- plei_counts_broad_all$...1
+plei_counts_broad$...1 <- NULL # remove gene names column
+
+colnames(plei_counts_broad) <- gsub(" ","_",gsub("\\+","_pos",colnames(plei_counts_broad)))
+
+head(plei_counts_broad[,1:5])
+```
+
+We will rearrange the celltype/color table to match the column order of the counts table (for easier plotting down below)
+
+```{r}
+plei_ctypes_broad_col <- plei_ctypes_broad_col[match(colnames(plei_counts_broad),plei_ctypes_broad_col$broad),]
+```
+
+
+And we add a low, arbitrary threshold to remove the sparse genes that have less than 50 counts across all clusters.
+
+```{r counts_filter}
+plei_counts_broad <- plei_counts_broad[rowSums(plei_counts_broad) > 50,] # post-hoc estimated with the plot of hvg
+head(plei_counts_broad[,1:5])
+```
+
+## Normalisation by library size
+
+There are clusters with massively different sizes (i.e. clusters of thousands of cells vs clusters of hundreds).
+
+```{r echo = FALSE}
+barplot(
+  rev(plei_ctypes$num_cells),
+  col=rev(plei_ctypes$Colours),
+  names.arg=rev(plei_ctypes$leiden_sort),
+  cex.names = 0.5,
+  las=2,
+  horiz=TRUE
+  )
+```
+
+And if we check the distribution of counts per cluster:
+
+```{r echo = FALSE}
+boxplot(
+  log(plei_counts_broad+1),
+  col = plei_ctypes_broad_col$col,
+  las=2,
+  cex=0.5,
+  names.cex = 0.5
+  )
+```
+
+Since we are treating each cluster as a separate "condition", one can expand this to consider them as separate RNA libraries.
+Thus we can apply normalisation methods by library composition such as DESeq2.
+
+```{r normalisation}
+
+plei_dds_broad <- DESeqDataSetFromMatrix(countData = plei_counts_broad,
+                                   colData = data.frame(condition = colnames(plei_counts_broad)),
+                                   design = ~ condition)
+
+plei_dds_broad <- estimateSizeFactors(plei_dds_broad)
+plei_counts_broad_norm <- counts(plei_dds_broad, normalized=TRUE)
+
+head(plei_counts_broad_norm[,1:5])
+```
+
+Here below are plots of the expression of the first 200 genes in two different clusters, before and after normalisation.
+We can observe how these genes "behave" similarly before and after normalisation, but the range of variation is much more similar between clusters regardless of their size in cells.
+
+```{r echo = FALSE, fig.width = 10, fig.height = 8}
+par(mfrow = c(2,2))
+barplot(plei_counts_broad[1:200,1], main = "1st cluster, pre-normalisation")
+barplot(plei_counts_broad_norm[1:200,1], main = "1st cluster, post-normalisation")
+barplot(plei_counts_broad[1:200,18], main = "30th cluster, pre-normalisation")
+barplot(plei_counts_broad_norm[1:200,18], main = "30th cluster, post-normalisation")
+par(mfrow = c(1,1))
+```
+
+A birds-eye view of this across all clusters:
+
+```{r echo = FALSE}
+boxplot(
+  log(plei_counts_broad_norm+1),
+  col = plei_ctypes_broad_col$col,
+  las=2,
+  cex=0.5)
+```
+
+This method is not perfect but it is accurate enough for our purpose.
+
+## Counts-per-million normalisation
+
+We normalise the DESeq2-normalised (pseudo)counts as counts-per-million (CPM)
+
+```{r cpms}
+plei_cpm_broad <- apply(
+  plei_counts_broad_norm,
+  2,
+  function(x) {x * 1e6 / sum (x)}
+)
+rownames(plei_cpm_broad) <- rownames(plei_counts_broad_norm)
+plei_cpm_broad <- as.data.frame(plei_cpm_broad)
+```
+
+Visual comprobation:
+
+```{r echo = FALSE}
+boxplot(
+  log(plei_cpm_broad+1),
+  col = plei_ctypes_broad_col$col,
+  las=2,
+  cex=0.5)
+```
+
+Is there any column that was not normalised to CPM?
+
+```{r}
+colSums(plei_cpm_broad)
+```
+
+We finally write the tables:
+
+```{r}
+write.table(
+  plei_counts_broad_norm,
+  file = "./outputs/plei_counts_broad_norm.tsv",
+  sep = "\t",
+  dec = ".",
+  row.names = TRUE,
+  quote = FALSE
+)
+
+write.table(
+  plei_cpm_broad,
+  file = "./outputs/plei_counts_broad_norm_cpm.tsv",
+  sep = "\t",
+  dec = ".",
+  row.names = TRUE,
+  quote = FALSE
+)
+
+```

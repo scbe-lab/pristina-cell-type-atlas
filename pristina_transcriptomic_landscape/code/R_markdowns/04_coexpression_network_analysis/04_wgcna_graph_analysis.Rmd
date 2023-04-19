@@ -1,0 +1,779 @@
+---
+title: 'Pristina TranscriptomicLandscape 04: WGCNA graph analysis'
+author: "Alberto Perez-Posada @apposada"
+date: "2/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+dir <- '/mnt/sda/alberto/colabos/pristina/pristina_transcriptomic_landscape/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+options(stringsAsFactors = FALSE)
+
+```
+
+## About
+
+This markdown explores the weighted gene correlation networks of Pristina leidyi from a graph quantitative approach.
+
+We have defined a number of functions that work with igraph objects and allow to annotate genes inside the networks with different properties. We can later on explore network metrics based on different properties of the genes (module membership, functional annotation, etc.)
+
+We start by loading the necessary packages, importantly: wgcna, igraph, dplyr and ggplot2.
+
+```{r packages, warning = FALSE, message=FALSE}
+library(data.table)
+library(reshape2)
+library(plyr)
+library(dplyr)
+library(tidyverse)
+library(ComplexHeatmap)
+library(ggplot2)
+library(ggrepel)
+library(circlize)
+library(RColorBrewer)
+library(viridis)
+library(colorspace)
+library(WGCNA)
+library(igraph)
+library(topGO)
+```
+
+## Loading custom code
+
+We load here the necessary functions to work with graphs as stated above.
+
+```{r load_functions,}
+source("./code/R_functions/wgcna_igraph_functions/wgcna_igraph_functions.R")
+source("./code/R_functions/wgcna_igraph_functions/topGO_wrap_function.R")
+```
+
+## Loading previously-generated outputs from WGCNA
+
+```{r load_data}
+load("./outputs/rda/03_wgcna_analysis.rda")
+```
+
+## Generating a set of gene attributes
+
+We will 'annotate' the graph using several information sources. These files have a geneid -- trait long format.
+
+We will read them from a source file.
+
+```{r annotation, echo=FALSE, eval = FALSE}
+# How these tables were generated:
+#Transcription factors
+
+#assign a color to each class
+set.seed(4343)
+class_color_df <- data.frame(
+  TFclass = unique(plei_tfs$class),
+  color = c(
+    sample(
+      colors(distinct = TRUE),
+      length(unique(plei_tfs$class))/2
+      ),
+    sample(
+      rainbow(length(unique(plei_tfs$class))),
+      length(unique(plei_tfs$class))/2
+      )
+    )
+  )
+colnames(class_color_df) <- c("TFclass","color")
+
+#merge everything together
+plei_tfs_graph_annotation <- plei_tfs
+colnames(plei_tfs_graph_annotation)[2] <- "TFclass"
+
+plei_tfs_graph_annotation <- merge(
+  plei_tfs_graph_annotation,
+  class_color_df,
+  by.x = 2,
+  by.y = 1,
+  all.x = T
+)[,c(2,1,3)]
+
+# Functional categories (COG)
+plei_cogs <- read.table("./data/04_eggNOGannotation/plei_eggnog_COGs.tsv")
+plei_cogs <- as.data.frame(
+  separate_rows(plei_cogs, V2, sep = '(?<=.)(?=.)')
+)
+plei_cogs <- plei_cogs[(plei_cogs$V2 %in% LETTERS),]
+
+plei_functional_categories_graph_annotation <- plei_cogs #loaded from the source data
+colnames(plei_functional_categories_graph_annotation) = c("id","funcat")
+
+# Module
+plei_modules_graph_annotation <- plei_id_module # loaded from the previous markdown
+plei_modules_graph_annotation$module <- as.character(plei_modules_graph_annotation$module)
+plei_modules_graph_annotation <- 
+  merge(
+    plei_modules_graph_annotation,
+    plei_modules_table[,c(5,4)],
+    by.x = 2,
+    by.y = 1
+    )[,c(2,1,3)]
+colnames(plei_modules_graph_annotation) <- c("id","module","newcolor")
+
+# Gene color
+plei_genecolor_graph_annotation <- plei_genecolor
+```
+```{r load_graph_annotation_data, eval = TRUE}
+load("./data/06_graph_analysis_data/wgcna_graph_annotation.rda")
+```
+
+This includes:
+ * Transcription factor class (if any; both class and color for visualisation)
+```{r}
+head(plei_tfs_graph_annotation)
+```
+ * WGCNA module (both module name and module color)
+```{r}
+head(plei_modules_graph_annotation)
+```
+ * Cell type of max expression (both name and color; see Markdown #01)
+```{r}
+head(plei_genecolor_graph_annotation)
+```
+ * COG Functional Categories (see Markdown #03)
+```{r}
+head(plei_functional_categories_graph_annotation)
+```
+
+We merge here all the attributes in a list that can be looped over by our code. If we had more annotation information, we can add it here.
+
+```{r}
+# Merge
+plei_attributes_list <- list(
+  plei_tfs_graph_annotation,
+  plei_modules_graph_annotation,
+  plei_genecolor_graph_annotation,
+  plei_functional_categories_graph_annotation #,
+  # plei_TDHK_graph_annotation, # trans-developmental as in Marletaz et al., 2018
+  # plei_TFEG_graph_annotation # distinction TF / non-TF as in Levy et al., 2021
+  )
+```
+
+## Graph construction
+
+We will use igraph's `graph_from_adjacency_matrix` to generate a graph using the topology overlap matrix as source.
+
+```{r generate_graph0}
+plei_graph0 <- graph_from_adjacency_matrix(
+  adjmatrix = TOM_2,
+  add.colnames = "name",
+  mode = "upper",
+  weighted = TRUE,
+  diag = FALSE,
+)
+```
+```{r eval = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+load("./data/06_graph_analysis_data/plei_graph0.rda")
+```
+
+At this point we have a massive graph object (256M values) where every gene is connected to every gene with a minimum value. To prune the graph from sparse interactions, we explore the interactions between pairs of genes as present in the TOM matrix (see markdown #03):
+
+```{r}
+summary(TOM_2[1:1000000])
+```
+
+
+We can see that the vast majority of genes do not interact to each other (uppermost quantiles are near the minimum). We can see this in a density plot too.
+
+All interactions
+```{r density_TOM}
+plot(
+  density(
+    TOM_2[1:1000000]
+    )
+  , main = "TOM Density values"
+  )
+```
+
+Interactions above 0.01 (a very small value of TOM score)
+```{r density_TOM_filt}
+filt_small_values <- TOM_2[1:1000000] > 0.01  # disregard small values
+
+plot(
+  density(
+    TOM_2[1:1000000][filt_small_values]
+    )
+  , main = "TOM Density values ( > 0.01)"
+  )
+```
+
+We subset the graph edges based on these numbers. For a start, we choose 0.4 .
+
+```{r create_plei_graph, eval = TRUE}
+plei_graph <- subgraph.edges(
+  plei_graph0,
+  eids = which(E(plei_graph0)$weight >= 0.35),
+  delete.vertices = TRUE
+) # perhaps also load from memory?
+```
+```{r load_plei_graph, eval = FALSE, message = FALSE, warning = FALSE, echo = FALSE}
+load("./data/06_graph_analysis_data/plei_graph_0_35.rda")
+```
+
+
+We can parse this graph to 'annotate' the vertices (genes) using one of our custom functions:
+
+```{r parse_plei_graph}
+plei_parsenetwork <- ParseNetwork(plei_graph, plei_attributes_list)
+```
+
+We extract the graph and the attributes data frame.
+
+```{r retrieve_parsed_network}
+plei_graph2 <- plei_parsenetwork[[1]]
+plei_df_attr <- plei_parsenetwork[[2]]
+```
+
+We can see this graph now has information of TF class, color, functional category, module etc.
+```{r}
+plei_graph2
+```
+
+The number of genes in the graph, calculated as the length of the 'vertices' subset of the graph:
+
+```{r}
+vcount(plei_graph2)
+```
+
+##Divide into components
+
+We can plot the network for a quick check.
+
+We will first generate a layout for the graph that we will store for later use.
+
+``` {r layout_parsed_graph, cache = TRUE}
+plei_layout_kk <- layout_with_kk(
+  plei_graph2,
+  maxiter = 100 * vcount(plei_graph2),
+  kkconst = vcount(plei_graph2)
+  )
+```
+
+Now for the plot:
+
+```{r plot_layout_parsed_graph}
+plot(
+    main = "Pristina leidyi WGCNA network,\nKamida-Kawai (kk) layout",
+    plei_graph2,
+    vertex.size = 1.5,
+    vertex.label = NA,
+    vertex.color = "gray",
+    edge.color = rgb(0,0,0,0.1),
+    layout = plei_layout_kk
+)
+```
+
+
+We can observe that not every gene has the same amount of connections and that there seem to be compartmentalised modules. Do these correspond to the WGCNA modules?
+
+For that, we can divide the graph into so-called components using the `components` tool from igraph.
+
+```{r parsed_network_mainCCs }
+plei_id_component <- data.frame(
+  id = names(components(plei_graph2,mode=c("strong"))$membership),
+  member = components(plei_graph2,mode=c("strong"))$membership
+) %>% remove_rownames
+head(plei_id_component)
+```
+
+And for a quick check on the number of genes per connected component
+
+```{r}
+mainCCs <- data.frame(
+  CC = names(table(plei_id_component$member)),
+  ngenes = as.data.frame(table(plei_id_component$member))[,2]
+) %>%
+  remove_rownames %>%
+  arrange(desc(ngenes))
+  
+head(mainCCs)
+```
+
+## Classification agreement between pairs of genes
+
+We compare this classification between the wgcna clustering, the binning by max ctype expression, and the mainCC membership
+
+With this, we have one gene : one component. This is another way of classifying the genes. We can thus asses whether genes end up classified in a similar way as they did with WGCNA (using the Adjusted Rand Index). We can also check how well this matches our initial classification of genes by peak of expression.
+
+```{r adjusted_rand_index, fig.width=5, fig.height=6.5, warning = FALSE, message = FALSE}
+# Merge the data
+plei_adjrand <- merge(
+  plei_id_component,
+  plei_modules_graph_annotation,
+  by = 1,
+  all.x = T
+)
+plei_adjrand <- merge(
+  plei_adjrand,
+  plei_genecolor_graph_annotation,
+  by = 1
+)
+
+# Adjusted Rand Index
+library(mclust)
+plei_module_ctype_adjrandIndex <- adjustedRandIndex(
+  x = plei_adjrand$module,
+  y = plei_adjrand$genecolor
+)
+plei_module_CC_adjrandIndex <- adjustedRandIndex(
+  x = plei_adjrand$module,
+  y = plei_adjrand$member
+)
+plei_ctype_CC_adjrandIndex <- adjustedRandIndex(
+  x = plei_adjrand$genecolor,
+  y = plei_adjrand$member
+)
+```
+```{r adjusted_rand_index_plot, echo = FALSE}
+barplot(
+  c(
+    plei_module_ctype_adjrandIndex,
+    plei_module_CC_adjrandIndex,
+    plei_ctype_CC_adjrandIndex
+  ),
+  names = c(
+    "WGCNA module /\nctype highes expr",
+    "WGCNA module /\ngraph main CC",
+    "graph main CC /\nctype highes expr"
+  ),
+  ylim = c(0,1),
+  main = "Agreement between WGCNA modules, cell type\n
+  specificity and graph connected components",
+  col = viridis::magma(4)[2:4] #some pretty colors
+)
+```
+
+As we can see we can use igraph to isolate WGCNA modules. alternatively we could subset the network to separate all genes from the same module into smaller subgraphs.
+
+## Graph Visualisation
+
+We add the colors of modules and max ctype clustering and we observe the results:
+
+```{r plot_parsed_graph_genecolor, fig.width = 8, fig.height = 8}
+V(plei_graph2)$color <- V(plei_graph2)$genecolor
+
+plot(
+    main = "Pristina network, color\nof cell type at which max expr",
+    plei_graph2,
+    vertex.size = 1.5,
+    vertex.label = NA,
+    edge.color = rgb(0,0,0,0.1),
+    layout = plei_layout_kk
+)
+
+```
+
+```{r plot_parsed_graph_modulecolor, fig.width = 8, fig.height = 8}
+V(plei_graph2)$color <- V(plei_graph2)$newcolor
+plot(
+    main = "Pristina network, color\nof wgcna module",
+    plei_graph2,
+    vertex.size = 1.5,
+    vertex.label = NA,
+    edge.color = rgb(0,0,0,0.1),
+    layout = plei_layout_kk
+)
+```
+
+## Analysis of connected components
+
+Seeing that there is good agreement between WGCNA modules and TOM-derived CCs, we decide to explore these networks using a graph-based approach.
+
+To have a better glimpse at the structure and features fo the different network modules, we can split the actual graph object in smaller graph objects containing the genes of each connected component.
+
+We focus on centrality but future studies will expand to gene degree and assortativity.
+
+```{r divide_into_components, message = FALSE, warning = FALSE}
+#' seeing that there is good agreement between wgcna modules and TOM-derived CCs,
+#' we decide to explore these networks using a graph-based approach
+plei_grns_list <- divide_into_components( 
+  x = plei_graph2,
+  CCs = plei_id_component
+)
+```
+
+We can plot the looks of each network using this loop.
+
+```{r plot_separate_components, eval = FALSE}
+for (i in 1:length(plei_grns_list)) {
+  l <- layout_with_mds(plei_grns_list[[i]])
+  plot(
+    main = paste0("mainCC ",i),
+    plei_grns_list[[i]],
+    vertex.size = 1.5,
+    vertex.label = NA,
+    edge.color = rgb(0,0,0,0.1),
+    layout = l
+  )
+}
+
+#add example graphs as a png grid of networks
+```
+
+We retrieve the centrality of all the TF genes in the module networks:
+
+```{r tf_centrality_by_module}
+tfscentr_by_module <- centrality_by_network(plei_grns_list)
+
+plei_top_central_tfs <- 
+  unlist(
+    sapply(
+      tfscentr_by_module,
+      function(x){
+      if(length(x) < 3) {names(x)} else {names(rev(sort(x))[1:3])}
+      }
+      )
+    )
+
+plei_tfs_centrality_df <- 
+  merge(
+    data.frame(
+      id = sub(".*\\.","",names(unlist(tfscentr_by_module))),
+      module = sub("\\..*","",names(unlist(tfscentr_by_module))),
+      centrality = unlist(tfscentr_by_module)
+    ),
+    plei_modules_table,
+    by.x = 2,
+    by.y = 5,
+    all.x = TRUE
+  ) [,c(2,3,1,7)] %>% 
+  mutate(top_central = ifelse(id %in% plei_top_central_tfs,TRUE,FALSE)) %>%
+  remove_rownames
+
+colnames(plei_tfs_centrality_df) <- c("id","centrality","module","color","top_central")
+
+head(plei_tfs_centrality_df)
+```
+
+There seems to be a link between TF centrality in a given network module and the number of TFs in said network module.
+
+```{r plots_tfs_modules, echo = FALSE}
+barplot(
+  main = "number of TFs per network module",
+  sort(table(plei_tfs_centrality_df$module)),
+  col = names(sort(table(plei_tfs_centrality_df$color))),
+  cex.names = 0.6,
+  las = 2
+  )
+
+plot(
+    main = "Centrality with number\nof TFs/networkmodule",
+    sapply(tfscentr_by_module,length),
+    sapply(tfscentr_by_module,median),
+    bg = plei_tfs_centrality_df$color[match(names(tfscentr_by_module), plei_tfs_centrality_df$module)],
+    col = "gray",
+    pch = 21,
+    xlab = "Number of tfs in module",
+    ylab = "Median centrality"
+)
+
+plot(
+  main = "Centrality CV with number\nof TFs/networkmodule",
+  sapply(tfscentr_by_module,length),
+  sapply(tfscentr_by_module,function(x) sd(x)/mean(x)),
+  bg = plei_tfs_centrality_df$color[match(names(tfscentr_by_module), plei_tfs_centrality_df$module)],
+  col = "gray",
+  pch = 21,
+  xlab = "Number of tfs in module",
+  ylab = "CV centrality"
+)
+```
+
+Using ggplot2 we can visualise the values of centrality of transcription factors in each module, highlighting the most central ones.
+
+```{r stripchart_centrality, warning = FALSE}
+ggplot(
+  plei_tfs_centrality_df,
+  aes(
+    x = forcats::fct_rev(module),
+    y = log(centrality,10),
+  )
+) + 
+  geom_jitter(
+    position = position_jitter(0.6),
+    fill = plei_tfs_centrality_df$color,
+    shape = 21,
+    size = 3
+  ) +
+  scale_color_manual(values = c("NA", "black"), guide="none")+
+  theme(legend.position="none") +
+  theme_minimal() +
+  coord_flip() #add names to the top three
+```
+And to finally have a look in the network itself:
+
+```{r}
+plei_toptfvertex <- which(V(plei_graph2)$name %in% plei_tfs_centrality_df$id)
+
+
+plei_graph2_tfviz <- plei_graph2
+
+V(plei_graph2_tfviz)$color <- alpha(colour="#ececec",alpha=0.5)
+V(plei_graph2_tfviz)$color[plei_toptfvertex] <- V(plei_graph2)$color[plei_toptfvertex]
+V(plei_graph2_tfviz)$size <- 1.5
+V(plei_graph2_tfviz)$size[plei_toptfvertex] <- 2.2
+
+plot(
+  main = "Pristina network, top central tfs",
+  plei_graph2_tfviz,
+  #vertex.size = 1.5,
+  vertex.label = NA,
+  vertex.frame.color = rgb(0,0,0,0.15),
+  edge.color = rgb(0.6,0.6,0.65,0.1),
+  layout = plei_layout_kk
+)
+```
+
+
+## Exploring connections between modules
+
+We generate a subgraph with more lax values of TOM score.
+
+```{r generate_graph_cross_connections, eval = TRUE}
+plei_graph_analysis <- subgraph.edges(
+  plei_graph0,
+  eids = which(E(plei_graph0)$weight >= 0.2), # try 0.2
+  delete.vertices = TRUE
+)
+```
+```{r load_plei_graph_analysis, echo = FALSE, eval = FALSE}
+load("./data/06_graph_analysis_data/plei_graph_0_2.rda")
+```
+We parse this network to retrieve, for all the genes in the network, how many genes from each module connect to a given gene.
+
+Take one gene `x`. This gene connects to a number of other genes. These other genes can be from different modules: for a gene in a muscle module, many of its neighbour genes will be from the muscle module, but some may be from epidermal, nervous, or whichever other module.
+This function counts how many genes from each module are direct neighbours to gene x.
+
+This information is stored in a table where every gene is in a row and every column is a module. Values e.g. gene x - module j indicates how many genes from module j are direct neighbour from gene x.
+
+```{r cross_connections}
+plei_cross_connections <- as.data.frame(
+  t(
+    data.frame(
+      lapply(
+        V(plei_graph_analysis)$name,
+        connections_to_module_per_gene,
+        network = plei_graph_analysis,
+        id_module = plei_id_module
+      )
+    )
+  )
+)
+rownames(plei_cross_connections) <-  V(plei_graph_analysis)$name
+colnames(plei_cross_connections) <- levels(plei_id_module$module)
+
+plei_cross_connections <- merge(
+  plei_cross_connections,
+  plei_id_module,
+  by.x = 0,
+  by.y = 1
+)
+colnames(plei_cross_connections)[1] <- "id"
+
+str(plei_cross_connections)
+```
+
+Plain sum of the connections might mask connections between smaller modules. Dividing the cross-connections matrix by the size of the volume of the gene `x` can help highlighting these connections.
+
+```{r normalise_cross_connections}
+# Think of a dplyr way...
+size_cloud <- data.frame(
+  table(plei_cross_connections$module)
+  ) ; colnames(size_cloud) <-  c("id","size")
+
+
+plei_cross_connections <- merge(
+  plei_cross_connections,
+  size_cloud,
+  by.x = 42,
+  by.y = 1
+)
+
+plei_cross_connections_norm <- 
+  plei_cross_connections[,3:42]/plei_cross_connections[,43]
+rownames(plei_cross_connections_norm) <- plei_cross_connections$id
+plei_cross_connections_norm$module <- plei_cross_connections$module
+```
+
+From this table of cross-connections we will keep those genes that neighbour with genes from more than one module.
+
+```{r filter_cross_connections}
+filt_more_one_module <- apply(
+  plei_cross_connections_norm[,1:40],
+  1,
+  function(x){
+    a <- length( which( x > 0 ) ) > 1
+    return(a)
+    }
+  )
+
+plei_cross_connections_norm <- 
+  plei_cross_connections_norm[filt_more_one_module, ]
+```
+
+We aggregate these numbers by module to retrieve the number of cross-connections between modules.
+
+```{r aggregate_cross_connections_by_module}
+plei_cross_connections_norm_module <- aggregate(
+  plei_cross_connections_norm[1:40],
+  by = list(Module = plei_cross_connections_norm$module),
+  FUN = sum
+  )
+
+rownames(plei_cross_connections_norm_module) <- plei_cross_connections_norm_module$Module
+plei_cross_connections_norm_module$Module <-  NULL
+
+plei_cross_connections_norm_module <- 
+  plei_cross_connections_norm_module[
+    ,
+    colSums(plei_cross_connections_norm_module) > 0
+  ]
+```
+
+One possible way to visualise and integrate this information is through a heatmap.
+
+```{r cross_connections_heatmap, fig.width = 8, fig.height = 8, echo = FALSE}
+Heatmap(
+  name = "no. connections\nscore",
+  plei_cross_connections_norm_module[,1:40],
+  col = colorRamp2(
+    breaks = c(0,seq(0.0001,1, len = 19)),
+    colors = c("#f3f5f6",viridis::viridis(19))
+    ),
+  
+  show_row_names = T
+)
+```
+
+But... there is another way to represent this information, and that is by doing *another network*. This time,
+we create a network using the number of cross-connections as a proxy for adjacency in the network.
+
+```{r cross_connections_graph}
+plei_cross_connections_graph <- graph_from_adjacency_matrix(
+  adjmatrix = as.matrix(plei_cross_connections_norm_module),
+  add.colnames = "name",
+  mode = "upper",
+  weighted = TRUE,
+  diag = FALSE,
+)
+V(plei_cross_connections_graph)$color <- plei_modules_table$newcolor
+E(plei_cross_connections_graph)$width <-  log(E(plei_cross_connections_graph)$weight*5)
+l <- layout_in_circle(plei_cross_connections_graph)
+```
+
+```{r cross_connections_graph_plot_circle, fig.width=8, fig.height=8}
+set.seed(1234)
+plot(
+  main = "connections between gene modules",
+  plei_cross_connections_graph,
+  edge.color = rgb(0,0,0,0.3),
+  layout = l,
+  vertex.label.dist=1.5,
+  vertex.label.cex = 0.8,
+  vertex.size = 12
+)
+```
+
+A different layout:
+
+```{r cross_connections_graph_plot_default, , fig.width=8, fig.height=8  }
+set.seed(4343)
+plot(
+  main = "connections between gene modules",
+  plei_cross_connections_graph,
+  edge.color = rgb(0,0,0,0.3),
+  vertex.label.dist=1.5,
+  vertex.label.cex = 0.6,
+  vertex.size = 12
+)
+```
+
+To explore these connections we can dig into the biological processes where these connected genes might be working.
+
+First we extract the neighbouring genes from the cross-connection table, assuming that genes with cross-connections between modules i and j are neighbours in these connections.
+
+(At some point this should be deprecated in favor of a function that parses TOM or the graph based on real connections and not this downstream fishing method.)
+
+``` {r cross_connectetd_genes, message = FALSE, warning = FALSE}
+plei_genes_connecting_pairs_modules <- cross_connected_genes(
+  cross_connections = plei_cross_connections,
+  id_modules = plei_id_module
+)
+
+plei_id_GO <-
+  readMappings(
+    "./data/04_eggNOGannotation/plei_eggnog_GOs.tsv"
+  )
+
+ciliacross_connection_GOs <- getGOs(
+  genelist = list(
+    genes = plei_genes_connecting_pairs_modules$module_cilia_module_polycistin1
+    ),
+  gene_universe = 
+    rownames(plei_cpm),
+  gene2GO = plei_id_GO
+)
+
+ciliacross_connection_GOs$GOtable[[1]]
+```
+
+We can see that these neighbour genes across pairs of modules are sometimes enriched in functions linking to processes common to both cell types. In this example case, we see how genes highly expressed in polycystin positive cells that behave somewhat similarly to genes from the cilia module are also involved in cilium biology.
+
+
+## Saving the data
+
+```{r}
+save(
+  # table of counts
+  plei_cpm,
+  # graph from tom
+  plei_graph0,
+  # attributes and network with attributes
+  plei_attributes_list,
+  plei_graph2,
+  plei_df_attr,
+  plei_layout_kk,
+  # components
+  plei_id_component,
+  mainCCs,
+  plei_adjrand,
+  # separate networks
+  plei_grns_list,
+  # TF centrality
+  tfscentr_by_module,
+  plei_tfs_centrality_df,
+  plei_toptfvertex,
+  plei_graph2_tfviz,
+  # Cross_connections
+  plei_cross_connections,
+  plei_cross_connections_norm,
+  plei_cross_connections_norm_module,
+  plei_graph_analysis,
+  plei_cross_connections_graph,
+  plei_genes_connecting_pairs_modules,
+  file = "./outputs/rda/04_plei_wgcna_graph_analysis.rda"
+)
+```
+
+
+```{r echo = FALSE, eval = FALSE}
+save(
+  plei_tfs_graph_annotation,
+  plei_functional_categories_graph_annotation,
+  plei_modules_graph_annotation,
+  plei_genecolor_graph_annotation,
+  file = "./data/06_graph_analysis_data/wgcna_graph_annotation.rda"
+  )
+save(plei_graph0, file = "./data/06_graph_analysis_data/plei_graph0.rda")
+save(plei_graph,file="./data/06_graph_analysis_data/plei_graph_0_35.rda")
+save(plei_graph_analysis,file = "./data/06_graph_analysis_data/plei_graph_0_2.rda")
+```

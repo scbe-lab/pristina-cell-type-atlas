@@ -1,0 +1,450 @@
+---
+title: 'Pristina TranscriptomicLandscape 01: DataLoad'
+author: 'Alberto Perez Posada @apposada'
+date: '30/11/2022'
+output:
+  html_document: default
+  pdf_document: default
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+
+dir <- '/mnt/sda/alberto/colabos/pristina/pristina_transcriptomic_landscape/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+
+```
+
+## Loading Necessary Packages
+
+```{r warning = FALSE, message=FALSE}
+library(vroom)
+library(reshape2)
+library(ComplexHeatmap)
+library(circlize)
+library(viridis)
+library(colorspace)
+library(RColorBrewer)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(gplots)
+library(data.table)
+library(DESeq2)
+```
+
+## Loading necessary code
+
+```{r, warning = FALSE, message=FALSE}
+#courtesy from @Rich Scriven https://stackoverflow.com/questions/26045478/source-r-scripts-in-different-folders
+sourceFolder <- function(folder, recursive = FALSE, ...) 
+{ 
+    files <- list.files(folder, pattern = "[.][rR]$", 
+                        full.names = TRUE, recursive = recursive)
+    if (!length(files))
+        stop(simpleError(sprintf('No R files in folder "%s"', folder)))
+    src <- invisible(lapply(files, source, ...))
+    message(sprintf('%s files sourced from folder "%s"', length(src), folder))
+}
+
+sourceFolder(
+  "/mnt/sda/alberto/projects/dev/comparABle/code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+## Data Load
+
+First we will load a table containing information of the different cell types to inform on cluster identity, annotate the plots with colors, etc.
+
+```{r ctypes_table}
+plei_ctypes <- read.delim2(
+  "./data/01_celltypedata/plei_ctypes.tsv",
+  header = T
+)
+
+plei_ctypes$leiden_sort <- 
+  factor(
+    paste(
+      formatC(plei_ctypes$Cluster, width = 2, format = "d", flag = "0"), #2-digit number of cluster
+      plei_ctypes$Names_leiden_1.5, sep ="_" # name of the cluster
+      ),
+    levels = paste( # arrange cluster names by original ordering of the table (i.e. 'broad' cell type, hand-made order)
+      formatC(plei_ctypes$Cluster, width = 2, format = "d", flag = "0"),
+      plei_ctypes$Names_leiden_1.5, sep ="_"
+    )
+  )
+
+plei_ctypes <- plei_ctypes[order(plei_ctypes$Cluster),] #sort by numeric order 
+
+#table cluster name - color, for annotating purposes
+plei_ctypes_col <- data.frame( 
+  cluster = plei_ctypes$leiden_sort,
+  col = plei_ctypes$Colours
+)
+
+plei_ctypes_col <- plei_ctypes_col[order(plei_ctypes_col$cluster),]
+rownames(plei_ctypes_col) <-  NULL
+plei_ctypes_col <- plei_ctypes_col[1:49,] # we discard unannotated clusters
+
+head(plei_ctypes[,1:5])
+```
+
+We begin our with a matrix of transcript counts summed at the pseudo-bulk level of narrow cell types.
+
+```{r counts_setup}
+plei_counts_all <- vroom(
+  "./data/02_geneexpression/Pristina_atlas_counts.tsv",
+  col_names=T
+)
+
+plei_counts_all[,2:61] <- plei_counts_all[,2:61]
+
+plei_counts <- as.data.frame(plei_counts_all)
+
+rownames(plei_counts) <- plei_counts$...1
+plei_counts$...1 <- NULL # remove gene names column
+
+head(plei_counts[,1:5])
+```
+
+We set up the column names now.
+Because we arranged the table following cluster 0,1,... the naming order gets preserved.
+We also remove columns corresponding to un-annotated clusters (see Methods).
+
+```{r counts_colnames}
+colnames(plei_counts) <- plei_ctypes$leiden_sort #because we arranged the table following cluster 0,1,... the naming order gets preserved
+plei_counts <- setcolorder(plei_counts, neworder = as.character(plei_ctypes_col$cluster)) # set column order by broadtype (see above)
+plei_counts <- plei_counts[,1:49] #remove un-annotated clusters
+```
+
+We add a low, arbitrary threshold to remove the sparse genes that have less than 50 counts across all clusters.
+
+```{r counts_filter}
+plei_counts <- plei_counts[rowSums(plei_counts) > 50,] # post-hoc estimated with the plot of hvg
+head(plei_counts[,1:5])
+```
+
+## Normalisation by library size
+
+There are clusters with massively different sizes (i.e. clusters of thousands of cells vs clusters of hundreds).
+
+```{r echo = FALSE}
+barplot(
+  rev(plei_ctypes$num_cells),
+  col=rev(plei_ctypes$Colours),
+  names.arg=rev(plei_ctypes$leiden_sort),
+  cex.names = 0.5,
+  las=2,
+  horiz=TRUE
+  )
+```
+
+And if we check the distribution of counts per cluster:
+
+```{r echo = FALSE}
+boxplot(
+  log(plei_counts+1),
+  col = plei_ctypes_col$col,
+  las=2,
+  cex=0.5,
+  names.cex = 0.5
+  )
+```
+
+Since we are treating each cluster as a separate "condition", one can expand this to consider them as separate RNA libraries.
+Thus we can apply normalisation methods by library composition such as DESeq2.
+
+```{r normalisation}
+
+plei_dds <- DESeqDataSetFromMatrix(countData = plei_counts,
+                                   colData = data.frame(condition = colnames(plei_counts)),
+                                   design = ~ condition)
+
+plei_dds <- estimateSizeFactors(plei_dds)
+plei_counts_norm <- counts(plei_dds, normalized=TRUE)
+
+head(plei_counts_norm[,1:5])
+```
+
+Here below are plots of the expression of the first 200 genes in two different clusters, before and after normalisation.
+We can observe how these genes "behave" similarly before and after normalisation, but the range of variation is much more similar between clusters regardless of their size in cells.
+
+```{r echo = FALSE, fig.width = 10, fig.height = 8}
+par(mfrow = c(2,2))
+barplot(plei_counts[1:200,1], col = plei_ctypes$Colours[1], main = "1st cluster, pre-normalisation")
+barplot(plei_counts_norm[1:200,1], col = plei_ctypes$Colours[1], main = "1st cluster, post-normalisation")
+barplot(plei_counts[1:200,30], col = plei_ctypes$Colours[30], main = "30th cluster, pre-normalisation")
+barplot(plei_counts_norm[1:200,30], col = plei_ctypes$Colours[30], main = "30th cluster, post-normalisation")
+par(mfrow = c(1,1))
+```
+
+A birds-eye view of this across all clusters:
+
+```{r echo = FALSE}
+boxplot(
+  log(plei_counts_norm+1),
+  col = plei_ctypes_col$col,
+  las=2,
+  cex=0.5)
+```
+
+This method is not perfect but it is accurate enough for our purpose.
+
+## Counts-per-million normalisation
+
+We normalise the DESeq2-normalised (pseudo)counts as counts-per-million (CPM)
+
+```{r cpms}
+plei_cpm <- apply(
+  plei_counts_norm,
+  2,
+  function(x) {x * 1e6 / sum (x)}
+)
+rownames(plei_cpm) <- rownames(plei_counts)
+plei_cpm <- as.data.frame(plei_cpm)
+```
+
+Visual comprobation:
+
+```{r echo = FALSE}
+boxplot(
+  log(plei_cpm+1),
+  col = plei_ctypes_col$col,
+  las=2,
+  cex=0.5)
+```
+
+Is there any column that was not normalised to CPM?
+
+```{r}
+colSums(plei_cpm)
+```
+
+## Detecting highly variable genes
+
+With normalised data, we can explore the expression variability of genes across clusters of cells.
+For this, we will extract the coefficient of variation (sd/mean) of every gene and the sum of counts of every gene across cell clusters.
+
+```{r}
+plei_counts_cv <- merge(
+  data.frame(
+    id = rownames(plei_counts),
+    counts = as.numeric(rowSums(plei_counts))
+  ),
+  data.frame(
+    id = rownames(plei_cpm),
+  cv = apply(
+    plei_cpm[,1:49],
+    1,
+    function(x){
+      sd(x)/mean(x)
+    }
+  )
+  ),
+  by.x = 1,
+  by.y = 1
+)
+head(plei_counts_cv)
+```
+
+We can visualise how the coefficient of variation of a given gene behaves depending on the abundance of the gene across cell clusters.
+
+```{r echo = FALSE}
+scatter.smooth(
+  log(plei_counts_cv$counts,10),
+  plei_counts_cv$cv,
+  pch=19,
+  col=alpha("royalblue",0.1),
+  cex=0.7, 
+  xlab = "log10(sum of counts)", 
+  ylab = "coefficient of variation",
+  main = "Relationship variability / number of counts"
+)
+```
+
+A loess fitting of the data allows for the detection of genes with high coefficient of variation as function of their expression level
+
+```{r}
+#' Loess fitting to generate the highly variable gene set
+plei_loess <- loess(
+  plei_counts_cv$cv ~ log(plei_counts_cv$counts),
+  span= 1,
+  family = "symmetric"
+)
+
+filt <- which(plei_loess$residuals > 0) #firs iteration this was 1
+plei_hvg <- data.frame(id = rownames(plei_counts_cv$cv[filt]))
+```
+
+```{r echo=FALSE}
+par(mfrow=c(1,2))
+plot(plei_loess$residuals, col = rgb(0,0,0,0.1))
+abline(h = 0,col = "red")
+scatter.smooth(
+  log(plei_counts_cv$counts),
+  plei_counts_cv$cv,
+  pch=19,
+  col=alpha("royalblue",0.1),
+  cex=0.7, 
+  xlab = "log(sum of counts)", 
+  ylab = "coefficient of variation",
+  main = "Relationship variability / number of counts"
+)
+lines( # Visual confirmation that these genes match our criteria or hvg
+  log(plei_counts_cv$counts[filt]),
+  plei_counts_cv$cv[filt],
+  pch=19,
+  col=alpha("tomato2",0.5),
+  cex=0.7,
+  type ="p"
+)
+legend(x = "topright",          # Position
+       legend = c("All genes", "Hi-Var genes"),  # Legend texts
+       pch = 19,           # Line types
+       col = c("royalblue", "tomato2"),           # Line colors
+)                 # Line width
+par(mfrow=c(1,1))
+```
+
+These so-called highly variable genes (HVG) comprise nearly fifty percent of the total genes used in the downstream analysis.
+
+```{r echo = FALSE}
+barplot(
+  height = c(
+    "Highly Variable Genes" = nrow(plei_counts_cv[filt,]),
+    "Rest of genes" = nrow(plei_counts_cv)-nrow(plei_counts_cv[filt,])
+  ),
+  col = c(
+    "tomato",
+    "royalblue"
+  )
+)
+```
+
+## Defining broad cell types: co-occurrence of cell cluster similarity
+
+We can use a survival clustering approach (Levy et al., 2021) to infer what are the most similar cell type clusters.
+We will apply a soft threshold for genes with CV higher than 0.25.
+
+```{r}
+# comparABle function 'tidyup' from source
+plei_cpm_cooc = tidyup(plei_cpm, highlyvariable = T)
+
+# set fixed seed
+set.seed(4343)
+h <- c(0.75,0.95)
+clustering_algorithm <- "hclust"
+clustering_method <- "average"
+cor_method <- "pearson"
+p <- 0.1
+vargenes = rownames(plei_cpm_cooc)
+
+# Levy et al 2021 'treeFromEnsembleClustering' from source
+cooc <- treeFromEnsembleClustering(
+  x=plei_cpm_cooc, p=0.1, h=h,  n = 1000, vargenes = vargenes, bootstrap=FALSE,
+  clustering_algorithm=clustering_algorithm, clustering_method=clustering_method, 
+  cor_method=cor_method
+)
+```
+
+The resulting heatmap of similarity:
+
+```{r fig.width=12, fig.height=10, echo = FALSE}
+plei_ha_clu <- plei_ctypes_col$col[1:49]
+names(plei_ha_clu) <- plei_ctypes_col$cluster[1:49]
+
+ctypes_rowAnno <- 
+  rowAnnotation(
+    cluster = plei_ctypes_col$cluster[1:49],
+    col = list( cluster = plei_ha_clu ),
+    show_legend = F, show_annotation_name = F
+    )
+
+
+clu_ha = HeatmapAnnotation(
+  name = "cell types",
+  cluster = plei_ctypes_col$cluster[1:49],
+  col = list( cluster = plei_ha_clu )
+  )
+
+Heatmap(
+  name="co-occurence",
+  cooc$cooccurrence,
+  col = colorRamp2(
+    c(seq(min(cooc$cooccurrence),
+          max(cooc$cooccurrence),
+          length=9
+    )
+    ),
+    colors=c(
+      c("white",'#ffffe5','#fff7bc','#fee391','#fec44f','#fe9929','#ec7014','#cc4c02','#990000')
+    )
+  ),
+  cluster_rows = as.hclust(cooc$tree),
+  cluster_columns = as.hclust(cooc$tree),
+  left_annotation = ctypes_rowAnno,
+  top_annotation = clu_ha,
+  row_names_gp = gpar(fontsize = 8),
+  column_names_gp = gpar(fontsize = 8)
+)
+```
+
+## One last bit
+
+One last bit: a binning system for every gene to have an approximation of their peak of gene expression.
+We will go through this more thoroughly when doing the WGCNA analysis, but this can also be of good use.
+
+```{r}
+plei_genecolor <- data.frame(
+  id = rownames(plei_cpm),
+  genecolor = sapply(
+    rownames(plei_cpm),
+    function(x) {
+      a <- which( rownames(plei_cpm) == x )  
+      b <- which( plei_cpm[a,] == max(plei_cpm[a,]) ) # which is the highest value of gene i, ie in which ctype is highest
+      c <- colnames(
+        plei_cpm[a,][b] # grab the name of the cell type where eigengene i is highest
+      )
+      d <- plei_ctypes_col$col[plei_ctypes_col$cluster == c] #sub("X","",c) # replace some characters
+      return(d) # assign in the table
+    }
+  )
+)
+
+head(plei_genecolor)
+```
+
+## Saving the data
+
+We will save the important bits for further analysis in the rest of markdowns.
+(Note: this and "plei_modules_graph_annotation" object from Markdown \#05 are the same.)
+
+```{r}
+save(
+  # cell type table(s)
+  plei_ctypes,
+  plei_ctypes_col,
+  # gene expression data
+  plei_counts,
+  plei_counts_norm,
+  plei_cpm,
+  # highly-variable genes
+  plei_hvg,
+  # visual annotations
+  ctypes_rowAnno,
+  clu_ha,
+  plei_genecolor,
+  # destination
+  file = paste0(
+    "./outputs/rda/",
+    "01_plei_dataload.rda"
+  )
+)
+```

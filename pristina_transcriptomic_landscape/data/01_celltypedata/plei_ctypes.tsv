@@ -1,0 +1,61 @@
+Cluster	Names_leiden_1.5	Name_marker	Broad_Type	Colours	num_cells	pct_cells	num_cells_group	pct_cells_group	Colour_group
+1	piwi_pos_cells_1		piwi_pos_cells	#585858	7103	9.44	16247	21.60	#585858
+2	piwi_pos_cells_2		piwi_pos_cells	#9D9D9D	6557	8.72			#585858
+8	nidogen1_pos_cells	PrileiEVm002280t1	piwi_pos_cells	#B5B5B5	2587	3.44			#585858
+18	epidermal_progenitors		epidermis	#6BAED6	1172	1.56			#75CFEA
+0	epidermis_1		epidermis	#75CFEA	7333	9.75	14917	19.83	#75CFEA
+11	epidermis_2		epidermis	#93C5FB	2288	3.04			#75CFEA
+13	epidermis_3		epidermis	#78A4D0	1658	2.20			#75CFEA
+20	epidermis_4		epidermis	#021AE0	1004	1.33			#75CFEA
+24	epidermis_5		epidermis	#56A0CE	649	0.86			#75CFEA
+25	epidermis_6		epidermis	#1E90FF	622	0.83			#75CFEA
+43	epidermis_7		epidermis	#4565B2	191	0.25			#75CFEA
+16	gut_progenitors		gut	#BCEE68	1275	1.70			#32CD32
+31	crop		gut	#074722	438	0.58			#32CD32
+14	stomach_1		gut	#4D9385	1526	2.03			#32CD32
+39	stomach_2		gut	#79882D	265	0.35			#32CD32
+38	caveolin_pos_cells	PrileiEVm022227t1	gut	#82B39F	278	0.37			#32CD32
+15	anterior_intestine		gut	#228B22	1429	1.90			#32CD32
+9	anterior_mid_intestine_1		gut	#32CD32	2419	3.22	9253	12.30	#32CD32
+28	anterior_mid_intestine_2		gut	#A2B63C	514	0.68			#32CD32
+19	posterior_intestine		gut	#8B8B00	1109	1.47			#32CD32
+5	muscle_1		muscle	#B22222	4491	5.97	9141	12.15	#B22222
+6	muscle_2		muscle	#6A1414	3636	4.83			#B22222
+27	muscle_3		muscle	#EE5C42	567	0.75			#B22222
+30	muscle_4		muscle	#D26666	447	0.59			#B22222
+41	neurons_3		neurons	#EC7014	207	0.28			#FEC960
+3	neurons_1		neurons	#FEC960	5138	6.83	6105	8.12	#FEC960
+40	neurons_2		neurons	#FEE391	231	0.31			#FEC960
+42	neurons_4		neurons	#FFE7A3	203	0.27			#FEC960
+45	neurons_5		neurons	#FFCC33	175	0.23			#FEC960
+49	neurons_6		neurons	#FA9E42	127	0.17			#FEC960
+59	neurons_7		neurons	#ECE44C	24	0.03			#FEC960
+4	globin_pos_cells_1		globin_pos_cells	#FD6B6B	4667	6.20	4976	6.62	#FD6B6B
+33	globin_pos_cells_2		globin_pos_cells	#FDA8A8	309	0.41			#FD6B6B
+10	polycystin_2_pos_cells	PrileiEVm005033t1	polycystin_cells	#F29E6B	2298	3.06	4120	5.48	#F29E6B
+12	polycystin_1_pos_cells	PrileiEVm004079t1	polycystin_cells	#FFBE96	1822	2.42			#F29E6B
+7	mmp24_pos_cells	PrileiEVm009033t1	eleocytes	#EDA6C5	2758	3.67	3099	4.12	#EDA6C5
+36	fucolectin_pos_cells	PrileiEVm007557t1	eleocytes	#E066FF	283	0.38			#EDA6C5
+55	pgrn_pos_cells	PrileiEVm018088t1	eleocytes	#FF8BC9	58	0.08			#EDA6C5
+21	chaetal_sacs_1		chaetal_sacs	#004370	989	1.31	1828	2.43	#002E4E
+22	chaetal_sacs_2		chaetal_sacs	#002E4E	839	1.12			#002E4E
+17	lipoxygenase_pos_cells		lipoxygenase_pos_cells	#6D4C2B	1191	1.58	1191	1.58	#6D4C2B
+23	vigilin_pos_cells	PrileiEVm001339t1	vigilin_pos_cells	#B3A982	809	1.08	809	1.08	#B3A982
+26	lumbrokinase_pos_cells		lumbrokinase_pos_cells	#FF2F80	603	0.80	603	0.80	#FF2F80
+29	carbohydrate_metabolic_cells		carbohydrate_metabolic_cells	#ACD9E6	483	0.64	483	0.64	#ACD9E6
+34	secretory_1		secretory	#6841A8	302	0.40	481	0.64	#6841A8
+44	secretory_2		secretory	#7F6FAF	179	0.24			#6841A8
+32	arginase_pos_cells	PrileiEVm015527t1	arginase_pos_cells	#ACB1E6	351	0.47	351	0.47	#ACB1E6
+35	ldlrr_pos_cells	PrileiEVm010669t1	ldlrr_pos_cells	#CF9356	286	0.38	286	0.38	#CF9356
+37	metanephridia		metanephridia	#83E5CF	280	0.37	280	0.37	#83E5CF
+46	unnanotated		unnanotated	#EFEFEF	174	0.23	1048	1.39	#EFEFEF
+47	unnanotated		unnanotated	#EFEFEF	154	0.20			#EFEFEF
+48	unnanotated		unnanotated	#EFEFEF	153	0.20			#EFEFEF
+50	unnanotated		unnanotated	#EFEFEF	117	0.16			#EFEFEF
+51	unnanotated		unnanotated	#EFEFEF	85	0.11			#EFEFEF
+52	unnanotated		unnanotated	#EFEFEF	77	0.10			#EFEFEF
+53	unnanotated		unnanotated	#EFEFEF	74	0.10			#EFEFEF
+54	unnanotated		unnanotated	#EFEFEF	72	0.10			#EFEFEF
+56	unnanotated		unnanotated	#EFEFEF	51	0.07			#EFEFEF
+57	unnanotated		unnanotated	#EFEFEF	50	0.07			#EFEFEF
+58	unnanotated		unnanotated	#EFEFEF	41	0.05			#EFEFEF

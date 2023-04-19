@@ -1,0 +1,75 @@
+---
+title: "eggNOG annotation"
+author: "Alberto Perez-Posada @apposada"
+date: "20/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## About
+
+This markdown recapitulates the steps followed to annotate the Pristina transcriptome using EggNOG. Please note that the contents of this markdown are orientative and not 100% verbatim copy of the commands executed, the only exception being the actual call to EggNOG.
+
+## What is eggNOG?
+
+(from the official documentation: )
+EggNOG-mapper (a.k.a. emapper.py or just emapper) is a tool for fast functional annotation of novel sequences. It uses precomputed orthologous groups (OGs) and phylogenies from the eggNOG database (http://eggnogdb.embl.de/) to transfer functional information from fine-grained orthologs only.
+
+Common uses of eggNOG-mapper include the annotation of novel genomes, transcriptomes or even metagenomic gene catalogs.
+
+The use of orthology predictions for functional annotation permits a higher precision than traditional homology searches (i.e. BLAST searches), as it avoids transferring annotations from close paralogs (duplicate genes with a higher chance of being involved in functional divergence).
+
+Check https://github.com/eggnogdb/eggnog-mapper/wiki/eggNOG-mapper-v2.1.5-to-v2.1.8
+
+## Pristina
+
+We start by downloading and setting up eggNOG in our system.
+
+```{bash setup_eggnog, eval = FALSE}
+wget https://github.com/eggnogdb/eggnog-mapper/archive/refs/tags/2.1.9.tar.gz
+tar xzvf 2.1.9.tar.gz
+cd ./eggnog-mapper-2.1.9
+
+```
+
+Also, we must download the databases. This can take a lot of time.
+
+```{bash download_data, eval = FALSE}
+download_eggnog_data.py -y # from help: assume "yes" to all questions
+cd ../
+```
+
+To run the command that was used for *Pristina*, that can also take some time:
+
+```{bash run_eggnog, eval = FALSE}
+./eggnog-mapper-2.1.9/emapper.py --cpu 8 \
+           -i plei_longest.pep \
+           --itype proteins \
+           -m diamond \
+           --sensmode sensitive \
+           --target_orthologs all \
+           --go_evidence non-electronic \
+           --output ./pristina_eggnog
+```
+
+To retrieve the names used for annotation:
+
+```{bash table_preferrednames, eval = FALSE}
+cut -f1,9 ./pristina_eggnog.emapper.annotations > plei_eggnog_preferred_names.tsv
+```
+
+To retrieve the file we use to map genes and GOs in the `topGO` wrapper function:
+
+```{bash table_GO, eval = FALSE}
+cut -f1,10 ./pristina_eggnog.emapper.annotations > plei_eggnog_GOs.tsv
+```
+
+And to retrieve the gene-COG table that we use later in the analysis:
+
+```{bash table_COG, eval = FALSE}
+cut -f1,7 ./pristina_eggnog.emapper.annotations > plei_eggnog_COGs.tsv
+```
+

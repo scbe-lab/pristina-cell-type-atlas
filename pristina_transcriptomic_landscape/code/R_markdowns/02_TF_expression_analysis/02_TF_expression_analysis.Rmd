@@ -1,0 +1,632 @@
+---
+title: 'Pristina TranscriptomicLandscape 02: TF expression analysis'
+author: "Alberto Perez-Posada @apposada"
+date: "30/11/2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+
+dir <- '/mnt/sda/alberto/colabos/pristina/pristina_transcriptomic_landscape/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+
+```
+
+## Loading Necessary Packages
+
+```{r warning = FALSE, message=FALSE}
+library(data.table)
+library(reshape2)
+library(dplyr)
+library(tidyverse)
+library(ComplexHeatmap)
+library(ggplot2)
+library(circlize)
+library(RColorBrewer)
+library(viridis)
+library(colorspace)
+
+```
+
+
+## Loading necessary code (CHANGE PATHS)
+
+```{r, warning = FALSE, message=FALSE}
+#courtesy from @Rich Scriven https://stackoverflow.com/questions/26045478/source-r-scripts-in-different-folders
+sourceFolder <- function(folder, recursive = FALSE, ...) 
+{ 
+    files <- list.files(folder, pattern = "[.][rR]$", 
+                        full.names = TRUE, recursive = recursive)
+    if (!length(files))
+        stop(simpleError(sprintf('No R files in folder "%s"', folder)))
+    src <- invisible(lapply(files, source, ...))
+    message(sprintf('%s files sourced from folder "%s"', length(src), folder))
+}
+
+sourceFolder(
+  "/mnt/sda/alberto/projects/dev/comparABle/code/functions/", # change for definitive path once its final
+  recursive = TRUE
+  )
+# source("/mnt/sda/alberto/projects/dev/minitools_R/code/functions/")
+
+source('./code/R_functions/TF_analysis_functions/barplotcluster.R') # change for definitive path once its final
+```
+
+
+## Data Load
+
+We start with our previous session.
+
+```{r load_data}
+load(
+  "./outputs/rda/01_plei_dataload.rda"
+)
+```
+
+We will also load the TF annotation of Pristina leidyi.
+
+```{r load_TF_annotation}
+plei_tfs <- read.table(
+  "./data/03_TFdata/20221025_pristina_TFs_curated.tsv",
+  header = T)[,1:2] #load column of plei ID and TF class
+head(plei_tfs)
+```
+
+We subset the gene expression pseudo-bulk matrix to retrieve expression from the TFs.
+
+```{r}
+plei_tfs_cpm <-
+  plei_cpm[
+    rownames(plei_cpm) %in% plei_tfs$id,
+    1:49
+    ]
+
+colnames(plei_tfs_cpm) <- colnames(plei_cpm)[1:49]
+
+plei_tfs_cpm <- as.data.frame(plei_tfs_cpm)
+
+plei_tfs_cpm_hvg <- 
+  plei_tfs_cpm[
+    rownames(plei_tfs_cpm) %in% plei_hvg$id,
+    ]
+```
+
+We can browse the expression level of different TFs using this function.
+
+```{r}
+plot_tf_plei <- function(x){
+  if(x %in% rownames(plei_tfs_cpm)) {
+    barplot(
+      height=unlist(c(
+        plei_tfs_cpm[
+          grep(
+            paste("^",x,"$",sep=""),
+            rownames(plei_tfs_cpm),
+          ),
+          1:49
+        ]
+      )),
+      col = plei_ctypes_col$col,
+      border = "#2F2F2F",
+      las=2,
+      cex.names=0.7,
+      main= paste(
+        x,
+        " (",
+        plei_tfs[grep(x,plei_tfs$id),2],
+        ")\n",
+        sep=""
+      ),
+      ylab="counts per million per cluster"
+    )} else {
+      stop("Name not in list of TFs.")
+    }
+}
+
+```
+
+For example, the hnf4 gene;
+
+```{r}
+hnf4 <- "PrileiEVm006891t1"
+plot_tf_plei(hnf4)
+
+# -gut,hnf4 : 006891, 004665, 008019
+# -muscle: myoD: 008071, 014648
+# -neurons: myt1l: 000431, pou6f :003917
+# -UMAP feature of novel cell types:
+#   -lipoxygenase+ 001926
+# -globin+ 002870 005469
+# -eleocytes 005230 – ets4
+# -vigilin+ 005896, 006907
+# -polycystin 010161
+
+```
+
+As we have expression data of many transcription factors, we can visualise the global
+patterns of expression using heatmaps.
+We will do so by scaling the log-transformed expression of TFs to obtain a z-score.
+
+```{r}
+plei_tfs_zsco <- 
+  t(
+    scale(
+      t(
+        log(plei_tfs_cpm[,1:49]+1) # we add 1 for visualisation only
+        )
+      )
+    )
+```
+
+And using the ComplexHeatmap package:
+
+```{r echo=FALSE}
+# Color Palettes
+
+#Color palette for heatmap of TF-TF Spearman correlation
+plei_tfs_heat_col <- colorRamp2(
+  c( # breaks, clipped
+    seq(-0.4,0.2,len=10),
+    seq(0.3,0.5,len=10)
+  ),
+  colorRampPalette( # colors
+    rev(brewer.pal(7,"RdYlBu"))
+  )(20)
+)
+
+# Color palette for heatmap of expression
+col_plei_expr_zsco_hm <- colorRamp2(
+  c(1:6,6.5), # breaks, clipped
+  rev(sequential_hcl(7,"YlGnBu")) # colors
+  )
+
+clu_method <- "ward.D2"
+
+# The Heatmaps themselves
+plei_cor_hm <- Heatmap(
+  name="Spearman",
+  cor(
+    t(plei_tfs_zsco),
+    method="sp" # Spearman correlation
+  ),
+  clustering_method_columns = clu_method,
+  clustering_method_rows = clu_method,
+  col=plei_tfs_heat_col,
+  show_row_names = FALSE,
+  show_column_names = FALSE
+  )
+
+plei_expr_zsco_hm <- Heatmap(
+  name="norm\nexpr",
+  t(scale(t(plei_tfs_cpm[,1:49])))+2, # +2 for visualisation purposes
+  col=col_plei_expr_zsco_hm,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  cluster_rows=T,
+  clustering_method_columns = "single",
+  clustering_method_rows = "ward.D2",
+  cluster_columns=F,
+  top_annotation=clu_ha
+  )
+```
+
+```{r echo = FALSE}
+draw(plei_cor_hm)
+draw(plei_expr_zsco_hm)
+```
+
+## Analysing TFs at the TF class level
+
+We can explore the variability of TFs based at a TF class level.
+
+```{r}
+# boxplot CV per TF class
+
+plei_tfs_class_cv <- merge(
+  data.frame(
+    id = plei_tfs$id,
+    class = factor(
+      plei_tfs$class,
+      levels = unique(plei_tfs$class)
+      )
+    ),
+  data.frame(
+    id = rownames(plei_tfs_cpm),
+    cv = apply(
+      plei_tfs_cpm[,1:49],
+      1,
+      function(x){
+        sd(x)/mean(x)
+      }
+    )
+  ),
+  by = 1
+)[,2:3]
+
+head(plei_tfs_class_cv)
+
+```
+
+```{r echo = FALSE}
+tfs_cv_scatter <- 
+  ggplot(plei_tfs_class_cv %>% group_by(class) %>%
+           mutate( med = median(cv) ) %>%
+           mutate( numgenes = log( table( as.character(class) ) ) ) ,
+         aes(x = numgenes, y = med, label=class)) +
+  geom_text(hjust=0, vjust=0, aes(colour = class))+
+  scale_color_manual(
+    values = rainbow(length(levels(plei_tfs_class_cv$class)))
+    )+
+  theme_classic()
+
+tfs_cv_boxplot <- 
+  ggplot(plei_tfs_class_cv %>% group_by(class) %>%
+           mutate(med = median(cv)) %>%
+           mutate(numgenes = log(table(as.character(class)))),
+         aes(x = reorder(class, cv, FUN=median), y = cv)) +
+  geom_boxplot(aes(fill = numgenes))+
+  scale_fill_gradient(low="#00204D", high="#FFEA46")+
+  theme_classic()+
+  theme(
+    axis.text.x = element_text(
+      colour = rainbow(length(levels(plei_tfs_class_cv$class))),
+      angle = 90
+      )
+    )
+```
+
+```{r echo = FALSE}
+tfs_cv_scatter
+
+pdf(
+  file = "outputs/plots/plei_numtfs_mediancv_scatter.pdf",
+  width = 8,
+  height = 8
+)
+tfs_cv_scatter
+dev.off()
+```
+
+```{r echo = FALSE}
+tfs_cv_boxplot
+
+pdf(
+  file = "outputs/plots/plei_numtfs_cv_boxplot.pdf",
+  width = 12,
+  height = 7
+)
+tfs_cv_boxplot
+dev.off()
+```
+
+With this we observe that there are a number of TF classes with very few assigned
+genes in Pristina.
+
+```{r echo = FALSE}
+barplot(
+  table(plei_tfs$class),
+  col = rainbow(length(unique(sort(plei_tfs$class)))), # give them proper coloring like above
+  las = 2,
+  cex.names = 0.5,
+  ylim = c(0,200)
+  )
+
+pdf(
+  file = "outputs/plots/plei_numtfs_barplot.pdf",
+  width = 12,
+  height = 7
+)
+barplot(
+  table(plei_tfs$class),
+  col = rainbow(length(unique(sort(plei_tfs$class)))), # give them proper coloring like above
+  las = 2,
+  cex.names = 0.5,
+  ylim = c(0,200)
+  )
+dev.off()
+
+```
+
+We can focus on those with a minimum of four or five genes.
+
+```{r}
+plei_tfs_mainclasses <- 
+  names(
+    table(plei_tfs$class)[
+      table(plei_tfs$class) >= 4
+      ]
+    )
+plei_tfs_mainclasses <- sort(plei_tfs_mainclasses) # sort alphabetically
+plei_tfs_mainclasses
+```
+
+## ANOVA analysis of transcription factors
+
+To find differences in TF class composition between cell clusters, we can resort to multivariate analysis two-way ANOVA to detect differences of TF expression between cell clusters, TF class, and the interaction of the two.
+
+We will aggregate expression counts at the broad cell type level for this analysis.
+
+```{r}
+broadtypes_sort <- list( # using here the one from the excel
+  piwi = c(1,2,3),
+  epidermis = c(4,5,6,7,8,9,10,11),
+  gut = c(12,13,14,15,16,17,18,19,20),
+  muscle = c(21,22,23,24),
+  neuron = c(25,26,27,28,29,30,31),
+  blood = c(32,33),
+  polycystin = c(34,35),
+  eleo = c(36,37,38),
+  chaetal = c(39,40),
+  lipox = 41,
+  vigil = 42,
+  lumbrok = 43,
+  carb = 44,
+  secretory = c(45,46),
+  arg = 47,
+  ldlrr = 48,
+  metaneph = 49
+)
+plei_cpm_broad <- sapply(
+  X = broadtypes_sort,
+  function(x) {if(length(x) > 1){rowSums(plei_cpm[,x])} else {plei_cpm[,x]}} #maybe should be done with counts_norm?
+)
+
+```
+
+We generate our dataset for ANOVA analysis
+
+
+```{r}
+anova_data <- merge(
+  plei_cpm_broad,
+  plei_tfs,
+  by.x = 0, by.y = 1)[,c(19,2:18)]
+
+anova_data <- anova_data[anova_data$class %in% plei_tfs_mainclasses,]
+
+anova_data <- reshape2::melt(anova_data)
+colnames(anova_data) <- c("class","ctype","counts")
+anova_data$class <- factor(anova_data$class, levels = sort(unique(anova_data$class)))
+anova_data$ctype <- 
+  factor(
+    anova_data$ctype,
+    levels = colnames(plei_cpm_broad)
+    )
+
+anova_groupby <- group_by(anova_data, class, ctype) %>%
+  summarise(
+    count = n(),
+    mean = mean(counts, na.rm = TRUE),
+    sd = sd(counts, na.rm = TRUE)
+  )
+```
+
+A quick check of the looks of our dataset:
+
+```{r}
+summary(anova_data)
+```
+
+```{r}
+summary(anova_groupby)
+```
+
+The anova analysis here
+
+```{r}
+# Two-way ANOVA proper
+res.aov2 <- aov(counts ~ ctype + class + ctype:class, data = anova_data)
+summary(res.aov2)
+```
+
+As we see there is significant interactions between TF class and cell cluster.
+
+And an two-way interaction plot of the means of counts by class AND cell cluster.
+
+```{r}
+library(effects)
+
+interaction.plot(
+  x.factor = anova_data$ctype, trace.factor = anova_data$class, 
+  response = anova_data$counts, fun = mean, 
+  type = "b", legend = TRUE,
+  pch=c(1,19),
+  col = rainbow(35)
+  )
+
+plot(
+  allEffects(res.aov2),
+  multiline=TRUE
+  )
+
+```
+
+Tukey test to compare the means of TF counts by class, by cell cluster
+
+```{r}
+# Tukey comparison of means
+anova_comparisons_interaction <- TukeyHSD(res.aov2, which = "ctype:class")
+anova_comparisons_interaction$`ctype:class` <- 
+  anova_comparisons_interaction$`ctype:class`[
+    anova_comparisons_interaction$`ctype:class`[,4] < 0.05 ,
+    ]
+```
+
+From the interaction test, we extract the significant results for significant differences between the same TF class across different cell clusters.
+
+```{r}
+# put this all together with dplyr ...
+# also think this better and implement a FUNCTION
+anova_comparisons_interaction_DF <- data.frame(
+  comparison = rownames(anova_comparisons_interaction$`ctype:class`),
+  as.data.frame(
+  anova_comparisons_interaction$`ctype:class`
+  )
+)
+anova_comparisons_interaction_DF <- data.frame(
+  anova_comparisons_interaction_DF,
+  A = sub("-..*", "", anova_comparisons_interaction_DF$comparison),
+  B = sub("..*-", "", anova_comparisons_interaction_DF$comparison)
+)
+
+anova_comparisons_interaction_DF$class_A <- 
+  sub(".*:","",anova_comparisons_interaction_DF$A)
+anova_comparisons_interaction_DF$class_B <- 
+  sub(".*:","",anova_comparisons_interaction_DF$B)
+
+anova_comparisons_interaction_DF <- 
+  anova_comparisons_interaction_DF[
+  anova_comparisons_interaction_DF$class_A == 
+    anova_comparisons_interaction_DF$class_B ,
+  ]
+
+table(anova_comparisons_interaction_DF$class_A) # or class_B, its the same anyway
+plei_tfs_signif_class <- names(table(anova_comparisons_interaction_DF$class_A))
+```
+
+A quick visualisation of what are the TF classes that explain the most differences between cell clusters:
+
+```{r}
+barplot(
+  sort(table(anova_comparisons_interaction_DF$class_A)), # or class_B, its the same anyway
+  col = rev(brewer.pal(9,"Spectral")),
+  las = 2
+  )
+
+pdf(
+  file = "outputs/plots/plei_classes_anovatukey.pdf",
+  width = 8,
+  height = 6
+)
+barplot(
+  sort(table(anova_comparisons_interaction_DF$class_A)), # or class_B, its the same anyway
+  col = rev(brewer.pal(9,"Spectral")),
+  las = 2,
+  main = "top classes explaining differences\nacross cell clusters"
+  )
+dev.off()
+```
+
+And we see that all these classes are already in the set of TF classes we will be exploring
+
+```{r}
+plei_tfs_signif_class %in% plei_tfs_mainclasses
+```
+
+## Visualising TF class prevalence across cell clusters
+
+To visualise these differences in TF abundance at a TF class level, we retrieve the expression matrix at the class level. Below is a quick look too at the table (last columns, including class)
+
+```{r}
+
+plei_tfs_cpm_topclass <- 
+  merge(
+    plei_tfs_cpm,
+    plei_tfs,
+    by.x = 0,
+    by.y = 1,
+  ) %>% 
+  column_to_rownames("Row.names") %>%
+  filter(class %in% plei_tfs_mainclasses)
+
+head(plei_tfs_cpm_topclass[,45:50])
+```
+
+We will generate a matrix to count how many genes of each TF class are expressed in each cell cluster.
+
+```{r}
+plei_tfs_ngenes <- 
+  apply(
+    plei_tfs_cpm_topclass[1:49],
+    2,
+    function(x){ ifelse(x > 0, 1, 0) }
+    )
+row.names(plei_tfs_ngenes) <- plei_tfs_cpm_topclass$class
+
+plei_tfs_ngenes <-
+  aggregate(
+    plei_tfs_ngenes[, 1:49],
+    by = list(Category = rownames(plei_tfs_ngenes)),
+    FUN = sum) %>%
+  arrange(Category) %>%
+  column_to_rownames("Category")
+```
+
+We also generate a table of all the cpms per class and per cell cluster. We will aggregate (sum) all cpms by TF class, for each cell cluster separately. (We will also generate a normalised )
+
+```{r}
+plei_tfs_expgenes <-
+  aggregate(
+    plei_tfs_cpm_topclass[, 1:49],
+    by = list(Category = plei_tfs_cpm_topclass$class),
+    FUN = sum) %>%
+  arrange(Category) %>%
+  column_to_rownames("Category")
+```
+
+We divide the cpms/class by the numexp/class, thus retrieving the cpms per class normalised by the number of expressed genes from a given class.
+
+```{r}
+plei_tfs_expngenes <- 
+  plei_tfs_expgenes / plei_tfs_ngenes
+plei_tfs_expngenes <- apply(plei_tfs_expngenes, 2, function(x){ifelse(is.nan(x),0,x)})
+
+plei_tf_EXPNGEN <- 
+  apply(plei_tfs_expngenes, 2, function(x) {
+    x / sum(x)
+  })
+```
+
+A barplot to show the prominence/prevalence of TF classes on each cell cluster.
+
+```{r echo = FALSE}
+barplot_cluster(t(plei_tf_EXPNGEN)) # add color legend, make consistent with the rest of figures
+
+pdf(
+  file = "outputs/plots/plei_tfclass_barplotcluster.pdf",
+  width = 14,
+  height = 7
+)
+barplot_cluster(t(plei_tf_EXPNGEN))
+dev.off()
+```
+
+## Saving the data
+
+We will save the important bits for further analysis in the rest of markdowns.
+
+```{r}
+save(
+  # cell type table(s)
+  plei_counts,
+  plei_ctypes,
+  plei_ctypes_col,
+  # gene expression data
+  plei_cpm,
+  plei_tfs_cpm,
+  plei_tfs_cpm_topclass,
+  # tf data
+  plei_tfs,
+  plei_tfs_mainclasses,
+  plei_tfs_signif_class,
+  # anova analysis
+  res.aov2,
+  anova_comparisons_interaction,
+  anova_comparisons_interaction_DF,
+  # visual annotations
+  ctypes_rowAnno,
+  clu_ha,
+  #pick color palette for TFs
+  # destination
+  file = paste0(
+    "./outputs/rda/",
+    "02_tf_analysis.rda"
+  )
+)
+```

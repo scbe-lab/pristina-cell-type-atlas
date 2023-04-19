@@ -1,0 +1,910 @@
+---
+title: "Pristina TranscriptomicLandscape 03: Weighted Gene Coexpression Network Analysis"
+author: "Alberto Perez-Posada @apposada"
+date: "1/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+dir <- '/mnt/sda/alberto/colabos/pristina/pristina_transcriptomic_landscape/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+options(stringsAsFactors = FALSE)
+
+```
+
+## About
+
+This markdown showcases the use of WGCNA (Langfelder & Horvath, 2008) to identify modules of genes that are regulated in a similar manner across clusters of cell types, using pseudo-bulk data from gene counts aggregated at the Leiden cluster level. In this particular case, the clusters correspond to specific cell types validated using in situ hybridisations of cell markers.
+
+This markdown contains the main code chunks necessary for data transformation and running of WGCNA. For more information and a more detailed documentation, please refer to this script from the original documentation:
+https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/Rpackages/WGCNA/Tutorials/Consensus-NetworkConstruction-man.R
+
+## Loading Necessary Packages
+
+```{r load_packages, warning = FALSE, message=FALSE}
+library(data.table)
+library(reshape2)
+library(dplyr)
+library(tidyverse)
+library(ComplexHeatmap)
+library(ggplot2)
+library(circlize)
+library(RColorBrewer)
+library(viridis)
+library(colorspace)
+library(WGCNA)
+```
+
+## Loading necessary code (CHANGE PATHS)
+
+```{r load_functions, warning = FALSE, message=FALSE}
+source("./code/R_functions/wgcna_igraph_functions/wgcna_igraph_functions.R")
+```
+
+
+## Data Preparation
+
+We prepare by loading the necessary data from our previous markdowns:
+
+```{r load_data}
+load(
+  "./outputs/rda/02_tf_analysis.rda"
+)
+```
+
+We load our table of plei counts as input for the wgcna analysis.
+
+```{r}
+input_wgcna <-
+  plei_cpm[,1:49]
+```
+
+We will select variable genes to enter the analysis of WGCNA, with a CV > 1. Gene expression data will also be scaled by centering around the mean (z-score). datExpr is the data frame in the format that WGCNA likes.
+
+```{r setup_datExpr}
+# Filter of high CV
+cv_input_wgcna <-
+  apply(input_wgcna, 1, function(x)
+    sd(x) / mean(x))
+cv_input_wgcna <- cv_input_wgcna[complete.cases(cv_input_wgcna)]
+plot(density(cv_input_wgcna))
+
+cv_input_wgcna <-
+  cv_input_wgcna[cv_input_wgcna > 1]
+
+# Defining the datExpr object
+datExpr = as.data.frame(
+  scale(
+    t(
+      input_wgcna[
+        rownames(input_wgcna) %in% names(cv_input_wgcna), 
+        ]
+      )
+    )
+  ) # perhaps I should not scale them.
+
+rownames(datExpr) <- colnames(plei_cpm)
+nGenes <- ncol(datExpr)
+nSamples <- nrow(datExpr)
+```
+
+WGCNA normally makes sanity checks of sample composition and similarity, using hierarchical clustering of samples to detect and remove outliers. We will leave all our cell clusters, but here is the tree of clustering anyways.
+
+```{r cluster_tree}
+sampleTree <- hclust(dist(datExpr), method = "average")
+
+plot(
+  sampleTree,
+  main = "Cell cluster similarity",
+  sub = "",
+  xlab = ""
+)
+
+```
+
+### Power estimation
+
+We generate a set of numbers to run the analysis of scale free topology.
+
+```{r}
+# Choose a set of soft-thresholding powers
+powers <- c(c(1:10), seq(from = 12, to = 20, by = 2))
+powers
+```
+
+We proceed to run the analysis of scale free topology for multiple soft thresholding powers. The aim is to help the user pick an appropriate soft-thresholding power for network construction.
+
+```{r power_estimation}
+# Call the network topology analysis function
+sft <- pickSoftThreshold(datExpr, powerVector = powers, verbose = 5)
+sft
+```
+
+Browsing the fitting of the topology model we can pick our Beta soft thresholding power of choice (Beta = 5 in this case), as it provides a high R^2 fit and it also lays at the turning point between a lot of connectivity and very low connectivity.
+
+```{r , fig.width=8, fig.height=5, echo = FALSE}
+
+# Plot the results:
+par(mfrow = c(1, 2))
+
+cex1 = 0.9
+
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(
+  sft$fitIndices[, 1],
+  -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+  ylim = c(0,1),
+  xlab = "Soft Threshold (power)",
+  ylab = "Scale Free Topology Model Fit,signed R^2",
+  pch = ".",
+  main = paste("Scale independence")
+)
+
+text(
+  sft$fitIndices[, 1],
+  -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+  pos = 3,
+  labels = powers,
+  cex = cex1,
+  col = "darkred"
+)
+
+# this line corresponds to using an R^2 cut-off of h
+abline(h = 0.85, col = "tomato")
+abline(h = 0.9, col = "lightgreen")
+
+# Mean connectivity as a function of the soft-thresholding power
+plot(
+  sft$fitIndices[, 1],
+  sft$fitIndices[, 5],
+  xlab = "Soft Threshold (power)",
+  ylab = "Mean Connectivity",
+  pch = ".",
+  main = paste("Mean connectivity")
+)
+text(
+  sft$fitIndices[, 1],
+  sft$fitIndices[, 5],
+  labels = powers,
+  pos = 3,
+  cex = cex1,
+  col = "darkred"
+)
+```
+
+```{r}
+softPower  <-  5
+```
+
+## The Adjacency Matrix
+
+WGCNA's criterion, for two genes to be adjacent, is that they show similar levels of co-regulation. Co-regulation is defined high values of signed Pearson Correlation (that is, they show high levels of correlation or anti-correlation).
+
+The output is a matrix of n genes x n genes showcasing the level of corregulation between genes.
+
+```{r adjacency, eval = TRUE, echo = TRUE}
+adjacency  <-  adjacency(
+  datExpr, 
+  power = softPower
+  )
+dim(adjacency)
+```
+
+```{r load_adjacency, eval = FALSE, echo = FALSE}
+# the code above is set as eval = FALSE to prevent heavy-duty running during knitting of the markdown.
+# load("./data/05_wgcnadata/20221201_adjacency.rda")
+dim(adjacency)
+```
+
+## The Topological Overlapped Matrix (TOM)
+
+But WGCNA does not leave it there. This method takes into account the amount of shared neighbourhoods between pairs of genes to strengthen or weaken the level of association between the two.
+
+This is ran on top of the adjacency matrix and can take a LOT of time. For practicality, we have included the TOM we generated as an .rda object that we load to keep up with the analysis.
+
+As before, the TOM matrix is a n genes x n genes matrix.
+
+```{r TOM}
+TOM <- TOMsimilarity(adjacency)
+rownames(TOM) <- rownames(adjacency)
+colnames(TOM) <- colnames(adjacency)
+dim(TOM)
+```
+
+```{r load_TOM, eval = FALSE}
+# load("./data/05_wgcnadata/20221201_tom.rda")
+# rownames(TOM) <- rownames(adjacency)
+# colnames(TOM) <- colnames(adjacency)
+# dim(TOM)
+```
+
+The TOM can be used to generate graph objects that can be analysed using igraph. We will do that later.
+
+Higher values of TOM indicate higher level of association. This metric can be transformed to depict (dis)similarity between the genes, which gets us closer to the clustering steps.
+
+```{r dissTOM}
+dissTOM <- 1 - TOM
+```
+
+## Clustering and module detection
+
+WGCNA uses hierarchical clustering of the TOM-derived similarity to determine module membership.
+
+```{r cluster_genes_by_dissTOM}
+geneTree = hclust(as.dist(dissTOM), method = "average")
+```
+
+We set a minimum module size of a hundred genes, and ask to cut the tree. See `?cutreeDynamic` for a larger explanation.
+
+Importantly: The output value is a vector of numerical labels giving assignment of objects to modules. Unassigned objects are labeled 0, the largest module has label 1, next largest 2 etc.
+
+```{r assign_genes}
+minModuleSize <- 100
+
+dynamicMods <- cutreeDynamic(
+  dendro = geneTree,
+  distM = dissTOM,
+  deepSplit = 1,
+  pamRespectsDendro = FALSE,
+  minClusterSize = minModuleSize
+)
+```
+
+The output vector, can be transformed from discrete numeric values to colors for a more qualitative, but equally blindfolded naming system. Because the order of the contents of the vector matches the order of the genes in the datExpr matrix and the TOM matrix, we can transfer the gene names to this vector to retrieve an association gene-module.
+
+```{r rename_modules_as_colors}
+moduleColors <- labels2colors(dynamicMods)
+names(moduleColors) <- colnames(datExpr)
+```
+
+And even more, we can transform this information in a more human-friendly (and dplyr-friendly) format that we will use extensively in our downstream analysis:
+
+```{r data_frame_plei_modules}
+plei_id_module_wgcna <- data.frame(
+  id = colnames(datExpr),
+  module = moduleColors
+)
+
+head(plei_id_module_wgcna)
+```
+
+We can visualise the looks of our modules with `plotDendroAndColors`.
+
+```{r plot_dendro_and_colors}
+plotDendroAndColors(
+  geneTree,
+  moduleColors,
+  c("Dynamic Tree Cut"),
+  dendroLabels = FALSE,
+  hang = 0.03,
+  addGuide = TRUE,
+  guideHang = 0.05
+)
+```
+
+Based on the early splitting and length of branches, from this plot we can observe that gene modules are defined very discretely. We were able to observe a similar trend when browsing the heatmaps of the transcription factors in markdown #02.
+
+This can change for every dataset based on the species, quality of the data, and overall conditions of the experiment.
+
+WGCNA allows for extra steps to merge together modules that are too similar that were perhaps accidentally split when cutting the tree. This was not done for Pristina as gene modules provided to be very modular.
+
+As said before, refer to the official documentation for a more detailed depiction of the step-by-step-analysis.
+
+## Plotting the network
+
+```{r tom_network_plot, eval = TRUE, echo = TRUE}
+#' Plot the network
+restGenes <- (moduleColors != "grey")
+diss1 <- 1-TOMsimilarityFromExpr( datExpr[, restGenes], power = softPower )
+hier1 <- hclust(as.dist(diss1), method="average" )
+diag(diss1) = NA
+
+png(
+  file = "./data/05_wgcnadata/wgcna_NetworkTOMplot.png",
+  width = 1280,
+  height = 1280,
+  units = "px",
+  res = 300
+)
+TOMplot(1-diss1^4, hier1, as.character(moduleColors[restGenes]), # 1-X to change color
+        main = "TOM heatmap plot, module genes" )
+dev.off()
+```
+
+And the ouptut:
+
+<figure>
+    <img src="/mnt/sda/alberto/colabos/pristina/pristina_transcriptomic_landscape/data/05_wgcnadata/wgcna_NetworkTOMplot.png"
+         alt="TOM plot of Pristina leidyi genes"
+         width="600" 
+         height="600">
+    <figcaption>TOM plot of Pristina leidyi genes</figcaption>
+</figure>
+
+## Eigengenes
+
+From the definition in the original paper, the eigengene of a given module can be understood as:
+"The first principal component of a given module. It can be considereded a representative of the expression profiles of the genes in taht given module." (slightly adapted for clarity)
+
+
+```{r eigengenes}
+# Calculate eigengenes
+MEList <- moduleEigengenes(datExpr, colors = moduleColors)
+MEs <- MEList$eigengenes
+
+# Cluster module eigengenes
+METree <- hclust(
+  as.dist(1 - cor(MEs)), # Calculate dissimilarity of module eigengenes
+  method = "average"
+  )
+```
+
+We transform the eigengene table in a more human-friendly format
+
+```{r plei_eigengenes_df}
+plei_eigengenes <- data.frame(t(MEs))
+rownames(plei_eigengenes) <- sub("ME", "", rownames(plei_eigengenes))
+
+head(plei_eigengenes[,1:5])
+
+```
+
+To plot the looks of the eigengenes and how they relate to each other:
+
+```{r eigengene_networks_plot, fig.width=5, fig.height=8}
+plotEigengeneNetworks(
+  orderMEs(MEs),
+  "",
+  marDendro = c(0, 4, 1, 2),
+  marHeatmap = c(3, 4, 1, 2),
+  cex.lab = 0.8,
+  xLabelsAngle = 90
+)
+```
+
+```{r echo = FALSE}
+par(mfrow = c(1,1))
+```
+
+## Module membership and connectivity.
+
+For each gene, WGCNA defines a "fuzzy" measure of module membership by correlating the expression profile to that of the module eigengenes. If this value is closer to 1 it indicates that that gene is connected to many genes of that module.
+
+```{r }
+datKME <- signedKME(datExpr, MEs, outputColumnName = "MM_")
+```
+
+We can use this data object to retrieve the top connected genes within each module. This can be used as an alternative entry point for the generation of graphs of highly-connected genes. (Currently unused in the manuscript).
+
+```{r}
+plei_id_module_kME <-
+  id_module_kME(
+    modulecolors = moduleColors,
+    datkme = datKME
+  )
+
+filt_kME <- plei_id_module_kME$kME > 0.9
+
+plei_top_connected <- 
+  plei_id_module_kME[filt_kME,1:2] #two first columns
+
+# This below works because adjacency, TOM and dissTOM are in the same order
+# dissTOM_top_connected <- 
+#   dissTOM[
+#     rownames(adjacency) %in% plei_top_connected$id,
+#     colnames(adjacency) %in% plei_top_connected$id
+#     ]
+
+```
+
+We will revisit this a bit differently in the graph analysis (see markdown #04).
+
+## Curating the module membership information
+
+We have included a(n even more) human-friendly naming system for the gene modules of Pristina.
+This is based on the cell type where the respective eigengene is more highly expressed, and/or a prominent biological process of relevance enriched in the functional annotation of the genes comprising that module (i.e. cilia module).
+
+New colors were "chosen" based on the cell type where they are most highly expressed. To prevent confunsion with the color palette of the cell clusters, we used more vibrant colors in agreement with WGCNA vibrant colors added by default.
+
+```{r}
+plei_modules_table <- 
+  read.delim2(
+    "./data/05_wgcnadata/plei_modules_table.tsv",
+    header = T,
+    stringsAsFactors = F,
+  )
+
+plei_id_module_newname <- 
+  merge(
+    x = plei_id_module_wgcna,
+    y = plei_modules_table[,c(1,3,5)],
+    by.x = 2,
+    by.y = 1,
+    all.x = TRUE
+  )[,c(2,3,4)]
+
+head(plei_modules_table)
+head(plei_id_module_newname)
+```
+
+From now on we will use the 'curated' module names, but we will keep the original ones in our environment as well.
+
+One additional note: we will prune the module assignment by removing genes that have very very low counts in their assigned modules. This conservative decision will prevent over-fitting and potential artefactual results.
+
+```{r correct_membership ,eval = TRUE, echo = FALSE}
+abundance_filt <- apply(
+  plei_id_module_newname,
+  1,
+  function(x){
+    gene <- x[1]
+    module <- sub("39_stomach_2[ab]","39_stomach_2",x[2])
+    # print(x)
+    if ( module == "cilia" ) {
+      TRUE #there is no module called "cilia" thus we declare it TRUE
+    } else if (
+      plei_counts[
+        rownames(plei_counts) == gene,
+        colnames(plei_counts) == module
+      ] > 3 ) {
+      TRUE
+    } else {
+      FALSE
+    }
+  }
+)
+
+abundance_filt <- unlist(abundance_filt)
+
+plei_id_module <- plei_id_module_newname[abundance_filt,c(1,3)]
+colnames(plei_id_module) <- c("id","module")
+plei_id_module$module <- 
+  factor(
+    plei_id_module$module,
+    levels = plei_modules_table$module_humanfriendly
+    )
+
+head(plei_id_module)
+```
+
+We will store a second TOM, pruned in such a way, to generate graphs in the upcoming analyses.
+
+```{r}
+TOM_2 <- TOM[
+  rownames(TOM) %in% plei_id_module$id,
+  colnames(TOM) %in% plei_id_module$id
+]
+```
+
+Here is the expression throughout all cell clusters for each module eigengene, using the colors and naming of the new table:
+
+```{r echo = FALSE, warning = FALSE, message = FALSE, fig.width=15, fig.height=5}
+par(
+  mar=c(7,4,4,12)+0.1, xpd = TRUE
+)
+plot(
+  1,
+  type = "n",
+  xlab = "",
+  ylab = "z-score",
+  ylim = c(-0.15, 1),
+  xlim = c(0, 48),
+  main = "plei modules eigengenes",
+  xaxt = "n"
+)
+axis(
+  side=1,
+  at = 1:49,
+  labels = colnames(plei_cpm)[1:49],
+  las = 2,
+  cex.axis = 0.7,
+  xlab="cell type clusters"
+)
+for (i in 1:nrow(plei_eigengenes)) {
+  col_i <- plei_modules_table$newcolor[
+    plei_modules_table$wgcna_color == rownames(plei_eigengenes)[i]
+    ]
+  lines(c(1:49),
+        plei_eigengenes[i, 1:49],
+        type = "l",
+        col = col_i,
+        lwd=1.5)
+}
+legend(
+  x = "topright",
+  legend = plei_modules_table$module_humanfriendly,
+  inset = c(-0.12,0),
+  lty = 1,
+  col = plei_modules_table$newcolor,
+  ncol = 1,
+  cex = 0.5
+)
+```
+
+A tidier version of our expression data, organised by module membership:
+
+```{r}
+plei_wg_viz <- merge(
+  t(datExpr),
+  plei_id_module,
+  by.x = 0,
+  by.y = 1,
+  all.y = T # do we need this here?
+  ) %>%
+  column_to_rownames("Row.names") %>%
+  arrange(module)
+```
+
+And the result of plotting this as a heatmap, where rows correspond to genes and columns correspond to cell clusters. Color intensity indicates z-scored expression at a given cell cluster. Several transcription factors of interest have been highlighted.
+
+```{r echo = FALSE, warning = FALSE, message = FALSE, fig.width = 8, fig.height = 10}
+# plei_specific_tfs <- read.delim2(
+#   "./data/03_TFdata/plei_specific_tfs.tsv",
+#   header = T
+# )
+# 
+# ha = rowAnnotation(
+#   tfs = anno_mark(
+#     at = match(plei_specific_tfs$id,rownames(plei_wg_viz)),
+#     labels = c(plei_specific_tfs$TF)
+#     )
+#   )
+
+set.seed(4343)
+
+Heatmap(
+  plei_wg_viz[,1:49]+2,
+  name = "expression",
+  cluster_rows= F,
+  show_row_names = F,
+  show_row_dend = F,
+  cluster_columns = F,
+  show_column_names = F,
+  row_split = plei_wg_viz$module,
+  row_title_gp = gpar(fontsize = 8),
+  row_title_rot = 0,
+  col = rev(sequential_hcl(10,"YlGnBu")),
+  # right_annotation = ha,
+  top_annotation=clu_ha,
+  heatmap_legend_param = gpar(nrow = 2)
+)
+
+```
+We can finally write this set of genes and modules to store as a supplementary file:
+
+```{r}
+library(xlsx)
+write.xlsx(
+  plei_id_module,
+  file = paste0(
+    "./outputs/",
+    fcha(),
+    "_plei_wgcna_id_module.xlsx"
+    ),
+  sheetName = "pristina_wgcna_id_module",
+  col.names = TRUE,
+  row.names = FALSE,
+  showNA = TRUE
+)
+```
+
+
+```{r}
+# Fisher test TFs in modules / TFs in the whole genome
+nrow(plei_id_module[plei_id_module$id %in% rownames(plei_tfs_cpm),])
+```
+
+## Connectivity of transcription factor classes and module eigengenes
+
+```{r}
+plei_modules <- plei_modules_table$newname
+plei_modules_colors <- plei_modules_table$newcolor
+```
+
+We subset the datKME table (correlation genes - eigengenes) to retrieve the transcription factors.
+
+```{r}
+plei_tfs_modules_cor <- datKME[
+  rownames(datKME) %in% rownames(plei_tfs_cpm_topclass),
+]
+
+plei_tfs_modules_cor <-
+  plei_tfs_modules_cor[
+    ,
+    match(
+      plei_modules_table$wgcna_module,
+      sub( "MM_","",colnames(datKME) )
+      )
+    ]
+
+colnames(plei_tfs_modules_cor) <- plei_modules
+```
+
+We will count the number of TFs of each class that show high connectivity to each module and will use this as a proxy to infer what TF classes are potentially regulating each gene module.
+
+```{r}
+plei_tfs_modules <- 
+  matrix(
+    0,
+    nrow = length(plei_tfs_mainclasses),
+    ncol = length(plei_modules)
+    )
+
+rownames(plei_tfs_modules) <-
+  plei_tfs_mainclasses
+
+colnames(plei_tfs_modules) <- 
+  plei_modules
+
+plei_tfs_modules_pct <- plei_tfs_modules
+```
+
+Fill the matrices:
+
+``` {r}
+for (i in plei_modules) {
+  h <- which(plei_modules == i)
+  for (j in plei_tfs_mainclasses) {
+    n <- which(plei_tfs_mainclasses == j)
+    all_tfs_class_j <- plei_tfs$id[plei_tfs$class == j]
+    
+    cors_jclass_in_imodule <-
+      plei_tfs_modules_cor[
+        rownames(plei_tfs_modules_cor) %in% all_tfs_class_j,
+        colnames(plei_tfs_modules_cor) == i
+        ]
+    
+    good_tfs_jclass_in_imodule <-
+      length(
+        cors_jclass_in_imodule[cors_jclass_in_imodule > 0.5] # play around with this: % of TFs in that class with cor > 0.5,0.6, ...
+        )
+    
+    plei_tfs_modules[n, h] <-
+      good_tfs_jclass_in_imodule
+    
+    plei_tfs_modules_pct[n, h] <- 
+      good_tfs_jclass_in_imodule / length(cors_jclass_in_imodule) #maybe the way to do this is by dividing by the total number of TFs expressed in that module... except this is not a cell type or a physical location...
+  }
+}
+```
+
+Some heatmaps for visual representation of the pct of genes in each TF class that highly correlate with eigengenes.
+
+```{r}
+heatmap(plei_tfs_modules)
+
+heatmap(plei_tfs_modules_pct)
+
+plot(
+  density(
+    plei_tfs_modules_pct[
+      plei_tfs_modules_pct > 0
+      ]
+    ),
+  main = "distribution of correls tfs ~ module eigengenes"
+  )
+```
+
+A tidier visualisation:
+
+```{r echo = FALSE , warning = FALSE, message = FALSE}
+
+tf_wg_pct_hm <- t(
+  apply(
+    plei_tfs_modules_pct,
+    1,
+    function(x) x  / max(x)
+    )
+  )
+
+tf_wg_pct_hm <- 
+  tf_wg_pct_hm[
+    apply(tf_wg_pct_hm, 1, function(x){any(!is.nan(x))}),
+    ]
+
+col_heat_cor_tfs <- 
+  colorRamp2(
+    seq(0,0.8,len=10),
+    colorRampPalette(rev(
+      c(
+        "#ffee61",
+        "#96e88e",
+        "#5dc9ac",
+        "#4da2ba",
+        "#6b6eab",
+        "#552761"
+        ))
+      )(10)
+    )
+
+modules_ha_colors <- plei_modules_colors
+names(modules_ha_colors) <- plei_modules
+
+modules_ha <- 
+  HeatmapAnnotation(
+    modules = colnames(plei_tfs_modules) ,
+    col = list(modules=modules_ha_colors),
+    annotation_name_side='left'
+    )
+
+Heatmap(
+  name = "log(# cor(Sp) > 0.5)",
+  tf_wg_pct_hm,
+  # plei_tfs_modules_pct, #another option is inflate the colors for the maximum pct per row.
+  col = col_heat_cor_tfs,
+  heatmap_legend_param = list(
+    title=expression(paste("% ", rho, " > 0.5")),
+    title_position = "leftcenter-rot",
+    at=c(0,1),
+    labels=c("min","max")
+  ),
+  row_names_side = "right",
+  row_names_gp = gpar(cex=0.7),
+  clustering_method_rows = "ward.D2",
+  cluster_columns = F,
+  show_column_names = F,
+  column_title="Coexpression of TF classes and\ngene modules",
+  column_title_gp = gpar(cex=0.8,fontface="bold"),
+  top_annotation=modules_ha # WGCNA modules 
+)
+
+```
+
+
+```{r}
+plei_specific_tfs <- read.delim2(
+  "./data/03_TFdata/plei_specific_tfs.tsv",
+  header = T
+)
+
+tf_eigen <- 
+  datKME[
+    rownames(datKME) %in% plei_specific_tfs$id,
+  ]
+
+rownames(tf_eigen) <- 
+  plei_specific_tfs$TF[
+    match(rownames(tf_eigen),plei_specific_tfs$id)
+    ]
+
+colnames(tf_eigen) <- 
+  plei_modules_table$module_humanfriendly[
+    match(
+      sub("MM_","",colnames(tf_eigen)),
+      plei_modules_table$wgcna_module
+    )
+  ]
+
+tf_eigen <- 
+  tf_eigen[
+    ,
+    match(
+      plei_modules_table$module_humanfriendly,
+      colnames(tf_eigen)
+      )
+  ]
+
+col_eigen <- 
+  colorRamp2(
+    breaks = 
+      c( # breaks, clipped
+        seq(min(tf_eigen),0,len=5),
+        seq(0,1,len=5)
+        ),
+    colors = colorRampPalette(rev(brewer.pal(10,"RdYlBu")))(10)
+  )
+
+Heatmap(
+  name = "correlation",
+  tf_eigen,
+  cluster_rows = TRUE,
+  cluster_columns = TRUE,
+  col = col_eigen,
+  heatmap_legend_param = 
+    list(
+      col_fun = col_eigen,
+      title = "correlation",
+      at = c(min(tf_eigen),0, 0.5, 1), 
+      labels = c("min", "0","0.5", "1")
+    ),
+  top_annotation = 
+    HeatmapAnnotation(
+      which = "column",
+      module = colnames(tf_eigen),
+      col = 
+        list(
+          module = setNames(
+            plei_modules_table$newcolor,
+            plei_modules_table$module_humanfriendly
+            )
+          ),
+      show_legend = FALSE
+      ),
+  column_labels = sub("_"," ",colnames(tf_eigen))
+)
+```
+
+## Gene Ontology Analysis
+
+For this we will use a wrapper function of the GO enrichment analysis provided by the package `topGO` .
+
+First the setup
+
+```{r plei_GOs_setup, echo = FALSE, warning = FALSE}
+library(topGO)
+library(plyr)
+library(xlsx)
+
+source("./code/R_functions/wgcna_igraph_functions/topGO_wrap_function.R")
+
+#gene universe
+gene_universe <- rownames(plei_cpm)
+
+# gene-GO mappings
+plei_id_GO <-
+  readMappings(
+    "./data/04_eggNOGannotation/plei_eggnog_GOs.tsv"
+  )
+
+#list of genes of interest
+plei_wg_list <- split(rownames(plei_wg_viz),plei_wg_viz$module)
+
+```
+
+And now for the GO analysis:
+
+```{r plei_GOs}
+plei_wg_GO_all <- 
+  getGOs(
+    plei_wg_list,
+    gene_universe= rownames(plei_cpm),
+    gene2GO = plei_id_GO
+    )
+
+plei_wg_GO_table <- ldply(plei_wg_GO_all[[1]], .id="module")
+
+write.xlsx(
+  plei_wg_GO_table,
+  file = paste0(
+    "./outputs/",
+    fcha(),
+    "_plei_wgcna_GOterms.xlsx"
+    ),
+  sheetName = "pristina_wgcna_GOterms",
+  col.names = TRUE,
+  row.names = FALSE,
+  showNA = TRUE
+)
+
+```
+
+## Saving outputs
+
+We will store all the information of modules to be loaded by the next markdowns.
+
+```{r}
+save(
+  plei_cpm,
+  datExpr,
+  TOM,
+  TOM_2,
+  moduleColors,
+  plei_id_module,
+  plei_id_module_wgcna,
+  plei_modules_table,
+  MEs,
+  datKME,
+  plei_id_module_kME,
+  plei_top_connected,
+  plei_tfs_modules,
+  plei_tfs_modules_pct,
+  tf_eigen,
+  plei_wg_GO_all,
+  plei_wg_GO_table,
+  file = "./outputs/rda/03_wgcna_analysis.rda"
+)
+```

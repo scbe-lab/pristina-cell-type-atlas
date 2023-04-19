@@ -1,0 +1,397 @@
+---
+title: "Pristina Transcriptomic Landscape - Figure 4 Panels"
+author: "Alberto Perez-Posada @apposada"
+date: "12/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+dir = "/mnt/sda/alberto/colabos/pristina/pristina_transcriptomic_landscape/"
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+
+options(scipen=999)
+```
+
+## About
+
+This markdown generates the plots for the main panels of Figure 4; specifically, those whose analyses were ran in R.
+
+The necessary data has been generated step-by-step through a series of markdowns in the `/Processing/` folder(s).
+
+Most of the code here is a verbatim copypaste of the code used to generate these plots during the processing analyses.
+
+## Load the necessary packages
+
+```{r, warning = FALSE, message = FALSE}
+library(data.table)
+library(reshape2)
+library(plyr)
+library(dplyr)
+library(tidyverse)
+library(ComplexHeatmap)
+library(ggplot2)
+library(ggrepel)
+library(circlize)
+library(RColorBrewer)
+library(viridis)
+library(colorspace)
+library(WGCNA)
+library(igraph)
+library(topGO)
+```
+
+## Load the data
+
+We will first load the necessary data. The different data objects here were generated during the processing analyses in their respective markdowns.
+
+```{r}
+# load(
+#   "./data/0X_main_figure_panels_data/main_figure_panels_data.rda"
+#   )
+load(
+  "./outputs/rda/01_plei_dataload.rda"
+  )
+load(
+  "./outputs/rda/02_tf_analysis.rda"
+)
+load(
+  "./outputs/rda/03_wgcna_analysis.rda"
+  )
+load(
+   "./outputs/rda/04_plei_wgcna_graph_analysis.rda"
+)
+```
+
+For a quick view on the different objects:
+
+```{r}
+ls()
+```
+
+## Figure 4A
+
+Panel 4A is a heatmap showing genes in rows and cell clusters in columns, the genes being arranged by modules of coexpression detected using WGCNA. Heatmap color (from light green to dark blue) represents scaled, library size-normalised gene expression. The object `clu_ha` is a simple color-coding annotation of the columns to facilitate the reading. 
+
+This panel was generated using the package `ComplexHeatmap`. Neither rows nor columns were clustered, instead, a vector with the information of module membership was passed to subdivide the heatmap in chunks to enhance readability.
+
+```{r 4A, warning = FALSE, message = FALSE}
+clu_ha = HeatmapAnnotation(
+  name = "cell types",
+  cluster = plei_ctypes_col$cluster[1:49],
+  col = list(
+    cluster = 
+      setNames(
+        plei_ctypes_col$col[1:49],
+        plei_ctypes_col$cluster[1:49]
+        )
+      )
+  )
+
+plei_wg_viz <- merge(
+  t(datExpr),
+  plei_id_module,
+  by.x = 0,
+  by.y = 1,
+  all.y = T # do we need this here?
+  ) %>%
+  column_to_rownames("Row.names") %>%
+  arrange(module)
+
+plei_wgcna_hm <- Heatmap(
+  plei_wg_viz[,1:49]+2,
+  name = "expression",
+  cluster_rows= F,
+  show_row_names = F,
+  show_row_dend = F,
+  cluster_columns = F,
+  show_column_names = F,
+  row_split = plei_wg_viz$module,
+  row_title_gp = gpar(fontsize = 8),
+  row_title_rot = 0,
+  col = rev(sequential_hcl(10,"YlGnBu")),
+  top_annotation=clu_ha,
+  heatmap_legend_param = gpar(nrow = 2)
+)
+draw(plei_wgcna_hm)
+```
+
+A subsequent figure panel is generated in the directory of this markdown using the code below:
+
+```{r 4A_pdf, warning = FALSE}
+pdf(
+  file = paste0(
+    "./",
+    "Figure_4A.pdf"
+  ),
+  wi = 10, he = 12)
+draw(plei_wgcna_hm)
+dev.off()
+```
+
+## Figure 4C
+
+In a similar fashion, figure 4C specifically shows the normalised expression of _Pristina_ transcription factors throughout the cell clusters. Genes (i.e. rows) were clustered for visualising purposes only.
+
+```{r 4C, warning = FALSE, message = FALSE}
+# Color Palettes
+
+# Color palette for heatmap of expression
+col_plei_expr_zsco_hm <- colorRamp2(
+  c(1:6,6.5), # breaks, clipped
+  rev(sequential_hcl(7,"YlGnBu")) # colors
+  )
+
+clu_method <- "ward.D2"
+
+# The Heatmap itself
+
+plei_expr_zsco_hm <- Heatmap(
+  name="norm\nexpr",
+  t(scale(t(plei_tfs_cpm[,1:49])))+2, # +2 for visualisation purposes
+  col=col_plei_expr_zsco_hm,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  cluster_rows=T,
+  clustering_method_rows = "ward.D2",
+  cluster_columns=F,
+  top_annotation=clu_ha
+  )
+draw(plei_expr_zsco_hm)
+```
+
+A subsequent figure panel is generated in the directory of this markdown using the code below:
+
+```{r 4C_pdf, warning = FALSE}
+pdf(
+  file = paste0(
+    "./",
+    "Figure_4C.pdf"
+  ),
+  wi = 8, he = 12)  
+draw(plei_expr_zsco_hm)
+dev.off()
+```
+
+## Figure 4E
+
+Figure 4E represents a visualisation of the WGCNA network using the Kamida-Kawai layout, with nodes being genes and edges indicating coexpression. Node color represents the color of the cell cluster at which a given gene is most highly expressed (normalised expression). Edge color is semiopaque black to help visualising highly-interconnecting edges. 
+
+This plot was created using the WGCNA package to generate the TOM network, the `igraph` package to generate the graph object from the TOM matrix and its respective Kamida-Kawai layout, and the `base::` function `plot`. 
+
+```{r 4E, fig.width=10, fig.height=10, message=FALSE, warning=FALSE}
+V(plei_graph2)$color <- V(plei_graph2)$genecolor
+
+plot(
+  main = "Pristina WGCNA network,\ncolor of cell type at which max expr,\nKamada-Kawai Layout",
+  plei_graph2,
+  vertex.size = 1.5,
+  vertex.label = NA,
+  vertex.frame.color = rgb(0,0,0,0.15),
+  edge.color = rgb(0,0,0,0.1),
+  layout = plei_layout_kk
+  )
+
+```
+
+Alternatively, we can provide:
+
+```{r 4E_modulecolor, fig.width=10, fig.height=10, message=FALSE, warning=FALSE}
+V(plei_graph2)$color <- V(plei_graph2)$newcolor
+plot(
+  main = "Pristina network, color\nof wgcna module,\nKamada-Kawai Layout",
+  plei_graph2,
+  vertex.size = 1.5,
+  vertex.label = NA,
+  vertex.frame.color = rgb(0,0,0,0.15),
+  edge.color = rgb(0,0,0,0.1),
+  layout = plei_layout_kk
+)
+```
+
+A subsequent figure panel is generated in the directory of this markdown using the code below:
+
+```{r 4E_pdf, warning = FALSE}
+png(
+  paste0(
+    "./",
+    "Figure_4E.png"
+  ),
+  width = 1024,
+  height = 1024
+  )
+V(plei_graph2)$color <- V(plei_graph2)$genecolor    
+plot(
+  main = "Pristina WGCNA network,\ncolor of cell type at which max expr,\nKamada-Kawai Algorithm",
+  plei_graph2,
+  vertex.size = 1.5,
+  vertex.frame.color=rgb(0,0,0,0.1),
+  vertex.label = NA,
+  edge.color = rgb(0.1,0.1,0.1,0.1),
+  layout = plei_layout_kk
+  )
+
+dev.off()
+
+png(
+  paste0(
+    "./",
+    "Figure_4E_modulecolor.png"
+  ),
+  width = 1024,
+  height = 1024
+  )
+V(plei_graph2)$color <- V(plei_graph2)$newcolor
+plot(
+  main = "Pristina network, color\nof wgcna module,\nKamada-Kawai Layout",
+  plei_graph2,
+  vertex.size = 1.5,
+  vertex.label = NA,
+  vertex.frame.color = rgb(0,0,0,0.15),
+  edge.color = rgb(0,0,0,0.1),
+  layout = plei_layout_kk
+)
+
+dev.off()
+
+
+```
+
+## Figure 4F
+
+Figure 4F shows the centrality of the different transcription factors retrieved by WGCNA within their respective graphs derived from the WGCNA modules. Centrality values were calculated using `igraph` and the plot was generated using the package `ggplot2`.
+
+```{r 4F, warning=FALSE, message=FALSE}
+ggplot(
+  plei_tfs_centrality_df,
+  aes(
+    x = forcats::fct_rev(module),
+    y = log(centrality,10)
+  )
+) + 
+  geom_jitter(
+    position = position_jitter(0.2),
+    color = plei_tfs_centrality_df$color
+  ) +
+  geom_text_repel(
+    aes(
+      label = id,
+      color = top_central
+    ),
+    size = 2.5
+  )+
+  scale_color_manual(values = c("NA", "black"), guide="none")+
+  theme(legend.position="none") +
+  theme_minimal() +
+  coord_flip() #add names to the top three
+```
+
+A subsequent figure panel is generated in the directory of this markdown using the code below:
+
+```{r 4F_pdf, warning = FALSE, message=FALSE}
+pdf(
+  file = paste0(
+    "./",
+    "Figure_4F.pdf"
+  ),
+  wi = 8, he = 12)
+ggplot(
+  plei_tfs_centrality_df,
+  aes(
+    x = forcats::fct_rev(module),
+    y = log(centrality,10),
+  )
+) + 
+  geom_jitter(
+    position = position_jitter(0.6),
+    fill = plei_tfs_centrality_df$color,
+    shape = 21,
+    size = 3
+  ) +
+  scale_color_manual(values = c("NA", "black"), guide="none")+
+  theme(legend.position="none") +
+  theme_minimal() +
+  coord_flip() #add names to the top three
+dev.off()
+```
+
+A small panel depicting the top central TFs in the network:
+
+```{r 4F2, warning = FALSE, message=FALSE}
+plot(
+  main = "Pristina network, top central tfs",
+  plei_graph2_tfviz,
+  #vertex.size = 1.5,
+  vertex.label = NA,
+  vertex.frame.color = rgb(0,0,0,0.15),
+  edge.color = rgb(0.6,0.6,0.65,0.1),
+  layout = plei_layout_kk
+)
+```
+
+A subsequent figure panel is generated in the directory of this markdown using the code below:
+
+```{r 4F2_pdf, warning = FALSE, message=FALSE}
+pdf(
+  file = paste0(
+    "./",
+    "Figure_4F_2.pdf"
+  ),
+  wi = 8, he = 12)
+plot(
+  main = "Pristina network, top central tfs",
+  plei_graph2_tfviz,
+  #vertex.size = 1.5,
+  vertex.label = NA,
+  vertex.frame.color = rgb(0,0,0,0.15),
+  edge.color = rgb(0.6,0.6,0.65,0.1),
+  layout = plei_layout_kk
+)
+dev.off()
+```
+
+
+
+## Figure 4G
+
+Figure 4G retrieves the number of connections between modules and represents it in a graph of circular layout where nodes are modules and edges are number of cross-connections (i.e. number of connections between genes of one and the other module). Node color roughly matches the cell cluster where the genes are mostly expressed, with the exception of the cilia module, and edge thickness represents the number of connections relative to module size.
+
+This plot was created using the WGCNA package to generate the TOM network and measure the number of cross-connections, the `igraph` package to generate the graph object and the `base::` function `plot`. 
+
+```{r 4G, message = FALSE, warning = FALSE}
+plot(
+  main = "connections between gene modules",
+  plei_cross_connections_graph,
+  edge.color = rgb(0,0,0,0.3),
+  layout = layout_in_circle(plei_cross_connections_graph),
+  vertex.label.dist=1.5,
+  vertex.label.cex = 0.8,
+  vertex.size = 12
+)
+```
+
+A subsequent figure panel is generated in the directory of this markdown using the code below:
+
+```{r 4G_pdf, warning=FALSE,message=FALSE}
+set.seed(1234)
+pdf(
+  paste0(
+    "./",
+    "Figure_4G.pdf"
+  ),
+  he = 8,
+  wi = 8
+)
+plot(
+  main = "connections between gene modules",
+  plei_cross_connections_graph,
+  edge.color = rgb(0,0,0,0.3),
+  layout = layout_in_circle(plei_cross_connections_graph),
+  vertex.label.dist=1.5,
+  vertex.label.cex = 0.8,
+  vertex.size = 12
+)
+dev.off()
+```
