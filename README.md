@@ -15,3 +15,6 @@ Most of the analyses are coded in Python using Jupyter notebooks, followed by R 
 2. Notebooks in the root directory of the repository were used to process the gene x cell matrix from scratch.
 3. Code for the "transcriptional landscape" analyses is found at `./pristina_transcriptomic_landscape/`.
 4. The rest of the folders contain a number of tables and plots to generate the different supplementary figures.
+
+
+All analyses were run using Python v3 and R v4.0.3 in Windows OS 8 and Ubuntu GNU/Linux. All packages used are fully described in the Methods section of our manuscript.
