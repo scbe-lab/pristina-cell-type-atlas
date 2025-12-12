@@ -3,9 +3,9 @@ Analyses of the *Pristina leidyi* cell type atlas manuscript
 
 ## About
 
-This is the code repository of the manuscript "**Álvarez-Campos P, García-Castro H, Emili E, Pérez-Posada A, Salamanca-Díaz D, Mason V, Metzger B, Bely AE, Kenny N, Özpolat BD, and Solana J: Annelid adult cell type diversity and their pluripotent cellular origins**".
+This is the code repository of the manuscript "**Álvarez-Campos P, García-Castro H, Emili E, Pérez-Posada A, del Olmo I, Peron S, Salamanca-Díaz D, Mason V, Metzger B, Bely AE, Kenny N, Özpolat BD, and Solana J: Annelid adult cell type diversity and their pluripotent cellular origins**". Nat Commun 15, 3194 (2024). https://doi.org/10.1038/s41467-024-47401-6
 
-Current version of the manuscript: https://www.biorxiv.org/content/10.1101/2023.04.25.537979v1
+Current version of the manuscript: https://www.nature.com/articles/s41467-024-47401-6
 
 Here you can find all the code that was used to generate the main and supplementary figures of the manuscript. Some additional data such as Pseudobulk count matrices, GO term annotation, and WGCNA module membership can also be found here.
 
